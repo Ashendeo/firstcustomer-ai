@@ -169,7 +169,9 @@ def test_live_orchestrator_with_mocked_providers(client, token, monkeypatch):
         assert len(leads) == 1
         assert leads[0].source == "crustdata"
         assert leads[0].person_name == "Example Person"
-        assert leads[0].fit_score == 78
+        assert leads[0].fit_score == leads[0].evidence["scorecard"]["total"]
+        assert sum(x["earned"] for x in leads[0].evidence["scorecard"]["criteria"]) == leads[0].fit_score
+        assert leads[0].evidence["model_assessment"]["model_score"] == 78
         assert "utm_content=" in leads[0].draft_body
 
 
