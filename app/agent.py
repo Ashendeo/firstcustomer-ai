@@ -629,6 +629,8 @@ def run_campaign(campaign_id: str):
             })
             audit(db, c.id, "candidate_funnel_summary", details={
                 "company_search_results": len(companies),
+                "company_search_requested": settings.MAX_COMPANIES,
+                "company_search_shortfall": max(0, settings.MAX_COMPANIES - len(companies)),
                 "stage1_ranked": len(prioritized),
                 "stage2_ranked": len(enriched_candidates),
                 "advanced_enrichments_attempted": enrichment_attempts,
