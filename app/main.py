@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -14,6 +15,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from . import settings
@@ -242,18 +244,47 @@ def edit_draft(lead_id: str, csrf: str = Form(...), email: str = Form(default=""
     return redirect(f"/leads/{lead.id}")
 
 
+def _sqlite_database_is_busy(db: Session, exc: OperationalError) -> bool:
+    """Only retry SQLite lock contention; never hide unrelated SQL errors."""
+    return (db.bind is not None and db.bind.dialect.name == "sqlite"
+            and any(term in str(exc.orig).lower()
+                    for term in ("database is locked", "database table is locked")))
+
+
 @app.post("/leads/{lead_id}/approve")
-def approve(lead_id: str, csrf: str = Form(...), db: Session = Depends(get_db), _: str = Depends(authorize)):
+def approve(lead_id: str, csrf: str = Form(...), db: Session = Depends(get_db),
+            _: str = Depends(authorize)):
     check_csrf(csrf)
-    lead = get_lead(db, lead_id)
-    if lead.status != "draft":
-        raise HTTPException(409, "Only drafts may be approved")
-    if not lead.draft_subject or not lead.draft_body:
-        raise HTTPException(422, "Missing draft")
-    lead.status = "approved"
-    audit(db, lead.campaign_id, "outreach_approved", lead.id)
-    db.commit()
-    return redirect(f"/leads/{lead.id}")
+    # Approval has no external side effects. Retrying this specific DB-only
+    # transition is safe; never apply this strategy to email sends or paid APIs.
+    for attempt in range(3):
+        try:
+            lead = get_lead(db, lead_id)
+            if lead.status == "approved":
+                return redirect(f"/leads/{lead.id}")  # duplicate click is idempotent
+            if lead.status != "draft":
+                raise HTTPException(409, "Only drafts may be approved")
+            if not lead.draft_subject or not lead.draft_body:
+                raise HTTPException(422, "Missing draft")
+            lead.status = "approved"
+            audit(db, lead.campaign_id, "outreach_approved", lead.id)
+            db.commit()
+            return redirect(f"/leads/{lead.id}")
+        except OperationalError as exc:
+            # SQLAlchemy marks the transaction failed after a flush error;
+            # always rollback before trying in a fresh transaction.
+            db.rollback()
+            if not _sqlite_database_is_busy(db, exc):
+                raise
+            if attempt == 2:
+                logger.warning("Lead approval blocked by SQLite write lock: %s", lead_id)
+                raise HTTPException(
+                    503,
+                    "Local database is busy. Close other SQLite tools or active "
+                    "transactions, then retry approval; no emails were sent.",
+                    headers={"Retry-After": "2"},
+                ) from exc
+            time.sleep(0.15 * (attempt + 1))
 
 
 @app.post("/leads/{lead_id}/send")
