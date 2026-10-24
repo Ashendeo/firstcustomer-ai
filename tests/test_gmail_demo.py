@@ -105,3 +105,22 @@ def test_ambiguous_smtp_failure_never_auto_retries(client, token, monkeypatch):
     assert gmail_demo.send_campaign_demo(campaign_id)["status"] == "halted"
     assert gmail_demo.send_campaign_demo(campaign_id)["status"] == "halted"
     assert len(calls) == 1
+
+
+def test_gmail_sink_blocks_real_resend_and_autonomous_live(client, token, monkeypatch):
+    from app.integrations import send_email, IntegrationError
+    from app.outreach import ready_for_live, get_policy
+    configure_demo(monkeypatch)
+    campaign_id = create_ready_campaign()
+    with pytest.raises(IntegrationError, match="real Resend delivery is disabled"):
+        send_email("realprospect@prospect.example", "Hi",
+                   "Should never leave system", "lead-id")
+    with SessionLocal() as db:
+        policy = get_policy(db, campaign_id)
+        assert ready_for_live(policy) == "gmail_demo_sink_active"
+        lead = db.scalar(select(Lead).where(Lead.campaign_id == campaign_id))
+        lead_id = lead.id
+    response = client.post(f"/leads/{lead_id}/send",
+                           data={"csrf": token}, follow_redirects=False)
+    assert response.status_code == 409
+    assert "Gmail demo is active" in response.json()["detail"]
