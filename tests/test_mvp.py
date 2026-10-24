@@ -167,3 +167,35 @@ def test_live_orchestrator_with_mocked_providers(client, token, monkeypatch):
         assert leads[0].person_name == "Example Person"
         assert leads[0].fit_score == 78
         assert "utm_content=" in leads[0].draft_body
+
+
+def test_qwen_empty_response_recovers_with_ollama(monkeypatch):
+    """Thinking-only output must retry with native Ollama JSON mode."""
+    import sys
+    from types import ModuleType
+    from app import qwen_runtime
+    class ThinkingModel:
+        def chat(self, messages, stream):
+            assert stream is False
+            return [{"role": "assistant", "content": ""}]
+    fake_llm = ModuleType("qwen_agent.llm")
+    fake_llm.get_chat_model = lambda cfg: ThinkingModel()
+    monkeypatch.setitem(sys.modules, "qwen_agent", ModuleType("qwen_agent"))
+    monkeypatch.setitem(sys.modules, "qwen_agent.llm", fake_llm)
+
+    def fake_post(url, json, timeout):
+        assert url == "http://localhost:11434/api/chat"
+        assert json["think"] is False
+        assert json["format"] == "json"
+        class Response:
+            def raise_for_status(self): pass
+            def json(self): return {"message": {"content": '{"query":"sports companies","titles":["CTO"]}'}}
+        return Response()
+    monkeypatch.setattr(qwen_runtime.httpx, "post", fake_post)
+    monkeypatch.setattr(settings, "QWEN_MODEL_SERVER", "http://localhost:11434/v1")
+    assert qwen_runtime.generate_json("Find targets", {"product": "sports"})["query"] == "sports companies"
+
+
+def test_qwen_json_parser_skips_thinking_json():
+    from app.qwen_runtime import _json_object
+    assert _json_object('<think>{"not_final":1}</think>\n{"final":2}') == {"final": 2}
