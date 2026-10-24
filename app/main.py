@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from email_validator import EmailNotValidError, validate_email
 from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from html import escape
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -22,8 +23,13 @@ from . import settings
 from .agent import audit, run_campaign
 from .db import get_db
 from .integrations import IntegrationError, send_email, verify_calendly_signature
-from .models import AuditEvent, Campaign, Lead, ProcessedWebhook, StepCheckpoint
+from .models import (AuditEvent, Campaign, Lead, ProcessedWebhook, StepCheckpoint,
+                     OutreachPolicy, Suppression, OutreachAttempt, InboundReply)
 from .checkpoints import get_checkpoint
+from .outreach import (get_policy, preview_outreach, run_outreach,
+                       ready_for_live, jurisdiction_decision,
+                       normalized_email, valid_unsubscribe_signature)
+from .resend_events import handle_resend_event, verify_signature
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +140,10 @@ def campaign_detail(campaign_id: str, request: Request, db: Session = Depends(ge
     counts = {s: sum(l.status == s for l in leads) for s in ("draft", "approved", "sending", "sent", "booked", "canceled")}
     events = db.scalars(select(AuditEvent).where(AuditEvent.campaign_id == campaign.id).order_by(AuditEvent.created_at.desc()).limit(20)).all()
     checkpoints = db.scalars(select(StepCheckpoint).where(StepCheckpoint.campaign_id == campaign.id).order_by(StepCheckpoint.created_at)).all()
-    return page(request, "campaign.html", campaign=campaign, leads=leads, counts=counts, events=events, checkpoints=checkpoints)
+    policy = get_policy(db, campaign.id)
+    preview = preview_outreach(campaign.id)
+    return page(request, "campaign.html", campaign=campaign, leads=leads, counts=counts,
+                events=events, checkpoints=checkpoints, outreach_policy=policy, outreach_preview=preview)
 
 
 @app.post("/campaigns/{campaign_id}/run")
@@ -214,6 +223,147 @@ def recover_interrupted(
     audit(db, campaign_id, "interrupted_run_recovered")
     db.commit()
     return redirect(f"/campaigns/{campaign_id}")
+
+
+@app.post("/campaigns/{campaign_id}/outreach/policy")
+def configure_outreach(
+    campaign_id: str,
+    min_score: int = Form(default=85),
+    daily_limit: int = Form(default=10),
+    auto_send: bool = Form(default=False),
+    legal_basis: str = Form(default=""),
+    organization_type: str = Form(default=""),
+    sender_postal_address: str = Form(default=""),
+    reply_to: str = Form(default=""),
+    csrf: str = Form(...),
+    db: Session = Depends(get_db),
+    _: str = Depends(authorize),
+):
+    check_csrf(csrf)
+    campaign = get_campaign(db, campaign_id)
+    policy = get_policy(db, campaign.id)
+    if policy.mode == "live":
+        raise HTTPException(409, "Pause live sending before editing its policy")
+    if legal_basis not in ("", "express_consent", "documented_us_b2b",
+                           "documented_uk_corporate_lia"):
+        raise HTTPException(422, "Unsupported legal basis")
+    if organization_type not in ("", "corporation", "individual"):
+        raise HTTPException(422, "Unsupported organization type")
+    policy.min_score = max(85, min(min_score, 100))
+    policy.daily_limit = max(1, min(daily_limit, 10))
+    policy.auto_send = auto_send
+    policy.prepare_linkedin_drafts = False
+    policy.legal_basis = legal_basis
+    policy.organization_type = organization_type
+    policy.sender_postal_address = sender_postal_address.strip()[:500]
+    policy.reply_to = normalized_email(reply_to) or ""
+    policy.mode = "simulation"
+    policy.authorized_at = None
+    audit(db, campaign.id, "outreach_policy_configured")
+    db.commit()
+    return redirect(f"/campaigns/{campaign.id}")
+
+
+@app.post("/campaigns/{campaign_id}/outreach/activate")
+def activate_outreach(
+    campaign_id: str, confirm: str = Form(...), csrf: str = Form(...),
+    db: Session = Depends(get_db), _: str = Depends(authorize),
+):
+    check_csrf(csrf)
+    campaign = get_campaign(db, campaign_id)
+    policy = get_policy(db, campaign.id)
+    if confirm != "I_AUTHORIZE_LIVE_OUTREACH":
+        raise HTTPException(422, "Explicit live activation required")
+    if policy.mode == "live":
+        return redirect(f"/campaigns/{campaign.id}")
+    if not policy.auto_send:
+        raise HTTPException(422, "Enable auto send before activation")
+    if ready_for_live(policy) != "allow":
+        raise HTTPException(422, ready_for_live(policy))
+    if jurisdiction_decision(campaign, policy) != "allow":
+        raise HTTPException(422, jurisdiction_decision(campaign, policy))
+    policy.mode = "live"
+    policy.authorized_at = datetime.now(timezone.utc)
+    audit(db, campaign.id, "live_outreach_activated")
+    db.commit()
+    return redirect(f"/campaigns/{campaign.id}")
+
+
+@app.post("/campaigns/{campaign_id}/outreach/pause")
+def pause_outreach(
+    campaign_id: str, csrf: str = Form(...),
+    db: Session = Depends(get_db), _: str = Depends(authorize),
+):
+    check_csrf(csrf)
+    campaign = get_campaign(db, campaign_id)
+    policy = get_policy(db, campaign_id)
+    policy.mode = "simulation"
+    policy.authorized_at = None
+    audit(db, campaign.id, "live_outreach_paused")
+    db.commit()
+    return redirect(f"/campaigns/{campaign.id}")
+
+
+@app.post("/campaigns/{campaign_id}/outreach/run")
+def trigger_outreach(
+    campaign_id: str, tasks: BackgroundTasks, csrf: str = Form(...),
+    db: Session = Depends(get_db), _: str = Depends(authorize),
+):
+    check_csrf(csrf)
+    campaign = get_campaign(db, campaign_id)
+    if campaign.status != "ready":
+        raise HTTPException(409, "Campaign must finish discovery first")
+    policy = get_policy(db, campaign_id)
+    if policy.mode != "live":
+        return redirect(f"/campaigns/{campaign.id}")
+    # First-contact worker enforces checkpoints, caps, and suppression.
+    tasks.add_task(run_outreach, campaign_id)
+    return redirect(f"/campaigns/{campaign.id}")
+
+
+@app.get("/unsubscribe/{lead_id}/{token}", response_class=HTMLResponse)
+def unsubscribe_page(lead_id: str, token: str):
+    if not valid_unsubscribe_signature(lead_id, token):
+        raise HTTPException(404, "Invalid unsubscribe link")
+    safe_lead = escape(lead_id)
+    safe_token = escape(token)
+    return HTMLResponse(
+        "<h2>Stop business outreach</h2>"
+        "<p>Confirm that you do not want further emails from this sender.</p>"
+        f'<form method="post" action="/unsubscribe/{safe_lead}/{safe_token}">'
+        '<button type="submit">Unsubscribe</button></form>'
+    )
+
+
+@app.post("/unsubscribe/{lead_id}/{token}", response_class=HTMLResponse)
+def unsubscribe(lead_id: str, token: str, db: Session = Depends(get_db)):
+    if not valid_unsubscribe_signature(lead_id, token):
+        raise HTTPException(404, "Invalid unsubscribe link")
+    lead = get_lead(db, lead_id)
+    if lead.email:
+        email = normalized_email(lead.email)
+        if email and db.get(Suppression, email) is None:
+            db.add(Suppression(email=email, reason="unsubscribe"))
+    if lead.status not in ("booked",):
+        lead.status = "unsubscribed"
+    audit(db, lead.campaign_id, "contact_unsubscribed", lead.id)
+    db.commit()
+    return HTMLResponse("<h2>Unsubscribed</h2><p>No further outreach emails will be sent to this address.</p>")
+
+
+@app.post("/webhooks/resend")
+async def resend_webhook(request: Request, db: Session = Depends(get_db)):
+    raw = await request.body()
+    if len(raw) > 128 * 1024:
+        raise HTTPException(413, "Payload too large")
+    if not verify_signature(raw, request.headers):
+        raise HTTPException(401, "Invalid Resend webhook signature")
+    try:
+        result = handle_resend_event(db, raw, request.headers)
+    except (ValueError, json.JSONDecodeError):
+        db.rollback()
+        raise HTTPException(400, "Invalid Resend webhook data")
+    return result
 
 
 @app.get("/leads/{lead_id}", response_class=HTMLResponse)
