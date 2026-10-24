@@ -8,6 +8,11 @@ class CrustdataError(RuntimeError):
     pass
 
 
+class CrustdataPermissionError(CrustdataError):
+    """Definitive provider entitlement denial, not a transient request failure."""
+    pass
+
+
 class Crustdata:
     def __init__(self):
         if not settings.CRUSTDATA_API_KEY:
@@ -25,6 +30,10 @@ class Crustdata:
                 return response.json()
         except httpx.HTTPStatusError as exc:
             # Do not log the authorization header or untrusted response body.
+            if exc.response.status_code == 403:
+                raise CrustdataPermissionError(
+                    f"Crustdata HTTP 403 at {path}: endpoint access not enabled for this API key"
+                ) from exc
             raise CrustdataError(f"Crustdata HTTP {exc.response.status_code} at {path}") from exc
         except httpx.RequestError as exc:
             raise CrustdataError(f"Crustdata request to {path} failed") from exc
