@@ -168,3 +168,14 @@ class MarketPlaybook(Base):
     rubric: Mapped[dict] = mapped_column(JSON, default=dict)
     error: Mapped[str] = mapped_column(String(100), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SellerLookup(Base):
+    """Global write-ahead journal for paid pre-campaign company name lookup."""
+    __tablename__ = "seller_lookups"
+    lookup_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    normalized_query: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    results: Mapped[list] = mapped_column(JSON, default=list)
+    error: Mapped[str] = mapped_column(String(80), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
