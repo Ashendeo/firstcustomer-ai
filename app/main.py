@@ -266,7 +266,8 @@ def configure_outreach(
 
 @app.post("/campaigns/{campaign_id}/outreach/activate")
 def activate_outreach(
-    campaign_id: str, confirm: str = Form(...), csrf: str = Form(...),
+    campaign_id: str, tasks: BackgroundTasks,
+    confirm: str = Form(...), csrf: str = Form(...),
     db: Session = Depends(get_db), _: str = Depends(authorize),
 ):
     check_csrf(csrf)
@@ -286,6 +287,8 @@ def activate_outreach(
     policy.authorized_at = datetime.now(timezone.utc)
     audit(db, campaign.id, "live_outreach_activated")
     db.commit()
+    if campaign.status == "ready":
+        tasks.add_task(run_outreach, campaign.id)
     return redirect(f"/campaigns/{campaign.id}")
 
 
@@ -450,6 +453,8 @@ def send(lead_id: str, csrf: str = Form(...), db: Session = Depends(get_db), _: 
         raise HTTPException(409, "Cannot send outreach from fictional demo records")
     if not lead.email:
         raise HTTPException(422, "Enter and verify a recipient business email before sending")
+    if db.get(Suppression, normalized_email(lead.email)):
+        raise HTTPException(409, "This address is globally suppressed; no email will be sent")
     if not settings.RESEND_API_KEY or not settings.FROM_EMAIL:
         raise HTTPException(422, "Set Resend sender credentials before sending")
     lead.status = "sending"
