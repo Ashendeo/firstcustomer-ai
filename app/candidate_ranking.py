@@ -22,7 +22,7 @@ def prioritize_companies(campaign, companies: list[dict], skill: dict | None) ->
     return scored  # Search order determines outreach; evidence scores are informational.
 
 
-OUTREACH_TOP_N = 5
+OUTREACH_TOP_N = 20
 
 
 def provider_rank(lead):
@@ -38,7 +38,7 @@ def search_ordered_leads(leads):
 
 
 def outreach_leads(leads):
-    # Strict top five original results: unavailable contacts do not promote #6.
+    # Strict top twenty original results: unavailable contacts do not promote #21.
     selected, seen = [], set()
     for lead in search_ordered_leads(leads):
         rank = provider_rank(lead)
