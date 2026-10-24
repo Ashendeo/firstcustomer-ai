@@ -34,6 +34,7 @@ from .ranking import ranked_companies
 from .scoring import scorecard_for_display, score_company
 from .gmail_demo import gmail_demo_address, send_campaign_demo
 from .seller_research import normalize_company_domain
+from .company_lookup import lookup_company
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,22 @@ def index(request: Request, db: Session = Depends(get_db), _: str = Depends(auth
     return page(request, "index.html", campaigns=campaigns)
 
 
+@app.post("/company-lookup")
+def company_prefill_lookup(
+    company_name: str = Form(min_length=3, max_length=160),
+    csrf: str = Form(...),
+    db: Session = Depends(get_db),
+    _: str = Depends(authorize),
+):
+    check_csrf(csrf)
+    try:
+        return lookup_company(db, company_name)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @app.post("/campaigns")
 def create_campaign(
     tasks: BackgroundTasks,
@@ -115,7 +132,7 @@ def create_campaign(
     seller_domain: str = Form(default="", max_length=180),
     ideal_customer: str = Form(min_length=10, max_length=2000),
     country: str = Form(default="India", max_length=60),
-    buyer_titles: str = Form(default="Head of HR,HR Director", max_length=250),
+    buyer_titles: str = Form(default="", max_length=250),
     min_revenue_usd: int = Form(default=0, ge=0, le=100000000000000),
     max_revenue_usd: int = Form(default=0, ge=0, le=100000000000000),
     booking_url: str = Form(default="", max_length=500),
