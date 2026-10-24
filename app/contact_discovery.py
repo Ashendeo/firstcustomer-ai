@@ -188,13 +188,17 @@ def discover_contact(db, campaign_id: str, domain: str, discovery_key: str,
         check_group(order_contacts(records), phase)
 
     candidates = sorted(examined, key=lambda x: (-x["match"], x["name"].lower()))
+    best_people = order_contacts(primary + secondary)
     return {
         "person": chosen,
+        "best_person": chosen or (best_people[0] if best_people else None),
         "email": email,
         "candidates": candidates[:8],
         "people_considered": len(primary) + len(secondary),
         "fallback_used": bool(secondary),
         "fallback_profiles": len(secondary),
         "reason": ("verified_deliverable_company_email" if chosen
-                   else "no_matching_deliverable_business_email"),
+                   else ("contact_enrichment_budget_exhausted" if
+                         contact_budget["used"] >= settings.MAX_CONTACT_ENRICHMENTS
+                         else "no_matching_deliverable_business_email")),
     }
