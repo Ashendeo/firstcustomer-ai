@@ -81,7 +81,7 @@ def test_partial_failure_reuses_successful_crustdata_and_model_calls(client, tok
 
     approved = client.post(
         f"/campaigns/{campaign_id}/checkpoints/retry",
-        data={"csrf": token, "step_key": step_key},
+        data={"csrf": token, "step_key": step_key, "confirm": "POSSIBLE_DUPLICATE_CHARGE"},
         follow_redirects=False,
     )
     assert approved.status_code == 303
@@ -126,9 +126,36 @@ def test_ambiguous_company_search_not_auto_replayed(client, token, monkeypatch):
 
     client.post(
         f"/campaigns/{campaign_id}/checkpoints/retry",
-        data={"csrf": token, "step_key": "company_search"},
+        data={"csrf": token, "step_key": "company_search", "confirm": "POSSIBLE_DUPLICATE_CHARGE"},
     )
     client.post(f"/campaigns/{campaign_id}/run", data={"csrf": token})
     assert n == {"search": 2, "model": 1}
     with SessionLocal() as db:
         assert db.get(Campaign, campaign_id).status == "ready"
+
+
+def test_completed_checkpoint_is_reused_and_in_flight_requires_review(client, token):
+    from app.checkpoints import checkpointed, CheckpointNeedsReview
+    from app.models import StepCheckpoint
+    import pytest
+    campaign_id = create_campaign(client, token)
+    with SessionLocal() as db:
+        value = checkpointed(db, campaign_id, "external:a",
+                             {"query": "fixed"}, lambda: {"companies": ["A"]})
+        assert value == {"companies": ["A"]}
+    with SessionLocal() as db:
+        assert checkpointed(db, campaign_id, "external:a", {"query": "fixed"},
+                            lambda: pytest.fail("Billed operation rerun")) == value
+        with pytest.raises(CheckpointNeedsReview):
+            checkpointed(db, campaign_id, "external:a", {"query": "changed"},
+                         lambda: pytest.fail("Changed input must not run"))
+        # Emulate a worker crash after starting the request, before saving its response.
+        step = StepCheckpoint(campaign_id=campaign_id, step_key="external:b",
+                              input_hash=__import__("app.checkpoints", fromlist=["fingerprint"]).fingerprint({"v": 1}),
+                              status="in_flight", attempts=1)
+        db.add(step)
+        db.commit()
+    with SessionLocal() as db:
+        with pytest.raises(CheckpointNeedsReview):
+            checkpointed(db, campaign_id, "external:b", {"v": 1},
+                         lambda: pytest.fail("Crash replayed costly operation"))
