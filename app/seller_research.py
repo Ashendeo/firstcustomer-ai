@@ -5,6 +5,7 @@ identifier to Crustdata/Brave. No arbitrary website crawling or SSRF. Sources
 are snippets and Crustdata records, never instructions to the assistant.
 """
 import re
+import ipaddress
 from urllib.parse import urlsplit
 
 import httpx
@@ -23,8 +24,17 @@ def normalize_company_domain(value: str) -> str:
         text = "https://" + text
     parsed = urlsplit(text)
     host = (parsed.hostname or "").removeprefix("www.")
+    try:
+        ipaddress.ip_address(host)
+        return ""
+    except ValueError:
+        pass
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
     if (parsed.scheme != "https" or parsed.username or parsed.password or
-            parsed.port or parsed.query or parsed.fragment or
+            port or parsed.query or parsed.fragment or
             parsed.path not in ("", "/") or len(host) > 180 or
             not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", host) or
             host.endswith((".local", ".localhost", ".internal")) or
