@@ -9,6 +9,24 @@
 {% elif campaign.status == 'running' %}<div class="notice">Discovery is running. Refresh this page to see new leads. This demo uses an in-process job, so a deployment restart can interrupt it.</div>
 <form action="/campaigns/{{ campaign.id }}/recover-interrupted" method="post" class="action-row"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="confirm" value="PROCESS_STOPPED"><button type="submit">Recover interrupted run</button><span class="hint">Only after restarting the FastAPI process and confirming no prior worker is running.</span></form>
 {% endif %}
+<section class="panel">
+  <h2>Seller company research &amp; prospecting strategy</h2>
+  <p class="hint">Seller: {{ campaign.seller_name or 'Not provided' }} · {{ campaign.seller_domain or 'Website not provided (legacy campaign)' }}. This research precedes prospect search. Verifiable observations and inferred customer hypotheses are separated.</p>
+  {% if seller_research %}
+    <p><strong>Business summary:</strong> {{ seller_research.summary }}</p>
+    <p><strong>Proposed customer use cases:</strong> {{ seller_research.use_cases|join('; ') or 'Not established' }}</p>
+    <p><strong>Goals / pain hypotheses:</strong> {{ seller_research.hypotheses|join('; ') or 'Not established' }}</p>
+    {% if seller_research.search_rationale %}<p><strong>Search rationale:</strong> {{ seller_research.search_rationale }}</p>{% endif %}
+    {% if seller_research.sources %}
+      <p><strong>Web research sources</strong></p>
+      <ul>{% for source in seller_research.sources %}<li><a href="{{ source.url }}" rel="noopener noreferrer" target="_blank">{{ source.title }}</a></li>{% endfor %}</ul>
+    {% else %}<p class="hint">No external web citations were available for this research.</p>{% endif %}
+    {% if seller_research.limitations %}<p class="hint">Research limitations: {{ seller_research.limitations|join('; ') }}</p>{% endif %}
+    <p><strong>Generated search query:</strong> {{ campaign.search_query or 'Not generated yet' }}</p>
+  {% else %}
+    <p class="hint">Research has not run yet. Use Run discovery above; this is the first stage. Older campaigns without a seller domain fall back to your entered ICP.</p>
+  {% endif %}
+</section>
 <div class="stats">
   <div class="stat"><div class="statvalue">{{ leads|length }}</div><span>Accounts found</span></div>
   <div class="stat"><div class="statvalue">{{ leads|selectattr('person_name')|list|length }}</div><span>Contacts identified</span></div>
@@ -22,17 +40,28 @@
 <div class="table-scroll"><table><thead><tr><th>Rank</th><th>Company</th><th>Score</th><th>Strongest factor</th><th>Key gap</th><th>Basis</th></tr></thead><tbody>
 {% for row in ranked %}
 <tr><td><strong>#{{ row.rank }}</strong></td><td><a class="subtle-link" href="/leads/{{ row.lead.id }}">{{ row.lead.company_name }}</a><div class="small">{{ row.lead.domain }}</div></td>
-<td><span class="score">{{ row.lead.fit_score }}</span>/100</td>
+<td><span class="score">{{ row.lead.fit_score if row.lead.fit_score is not none else "Not scored" }}</span>{% if row.lead.fit_score is not none %}/100{% endif %}</td>
 <td>{{ row.top_strength }}</td><td>{{ row.main_gap }}</td>
 <td>{% if row.score_source == 'legacy_model' %}<span class="pill warn">Older model score</span>{% else %}<span class="pill success">Explained rubric</span>{% endif %}</td></tr>
 {% endfor %}
 </tbody></table></div>
 {% else %}<p class="empty">No companies ranked yet.</p>{% endif %}
 </section>
+<section class="panel">
+  <h2>Recalculate old scores from saved evidence</h2>
+  <p class="hint">Fix previous 0-point results without any Crustdata or Qwen calls. Draft leads only; any approved, sent or booked prospects are preserved. Insufficient evidence is shown as Not scored, never fabricated as a zero.</p>
+  {% if campaign.status != 'running' and outreach_policy.mode != 'live' %}
+  <form method="post" action="/campaigns/{{ campaign.id }}/rescore">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label><input type="checkbox" required name="confirm" value="RESCORE_SAVED_EVIDENCE"> Recalculate draft scores locally using rubric v2</label>
+    <button type="submit" class="secondary">Re-score saved evidence (no credits)</button>
+  </form>
+  {% else %}<p class="hint">Pause live outreach and finish discovery to enable safe rescoring.</p>{% endif %}
+</section>
 <section class="panel"><div class="between"><h2>Prospect pipeline</h2><span class="muted">Sorted by fit score</span></div>
 {% if leads %}
 <div class="table-scroll"><table><thead><tr><th>Company</th><th>Decision-maker</th><th>Fit</th><th>Status</th><th></th></tr></thead><tbody>
-{% for lead in leads %}<tr><td><strong>{{ lead.company_name }}</strong><div class="small">{{ lead.domain }}</div></td><td>{{ lead.person_name or 'Not found' }}<div class="small">{{ lead.person_title or 'Unknown role' }}</div></td><td><span class="score">{{ lead.fit_score }}</span>/100</td><td><span class="pill {{ 'success' if lead.status == 'booked' else 'neutral' }}">{{ lead.status }}</span></td><td><a href="/leads/{{ lead.id }}" class="subtle-link">Review →</a></td></tr>{% endfor %}
+{% for lead in leads %}<tr><td><strong>{{ lead.company_name }}</strong><div class="small">{{ lead.domain }}</div></td><td>{{ lead.person_name or 'Not found' }}<div class="small">{{ lead.person_title or 'Unknown role' }}</div></td><td><span class="score">{{ lead.fit_score if lead.fit_score is not none else "Not scored" }}</span>{% if lead.fit_score is not none %}/100{% endif %}</td><td><span class="pill {{ 'success' if lead.status == 'booked' else 'neutral' }}">{{ lead.status }}</span></td><td><a href="/leads/{{ lead.id }}" class="subtle-link">Review →</a></td></tr>{% endfor %}
 </tbody></table></div>
 {% else %}<div class="empty">No prospects yet. Run discovery above.</div>{% endif %}
 </section>
@@ -110,7 +139,7 @@
   <h3>Read-only campaign simulation</h3>
   <div class="table-scroll"><table><thead><tr><th>Prospect</th><th>Fit</th><th>Email</th><th>Decision</th></tr></thead><tbody>
   {% for p in outreach_preview %}
-  <tr><td>{{ p.company }}</td><td>{{ p.score }}</td><td>{{ p.email or 'Not enriched' }}</td><td>{{ p.decision.replace('_',' ') }}</td></tr>
+  <tr><td>{{ p.company }}</td><td>{{ p.score if p.score is not none else "Not scored" }}</td><td>{{ p.email or 'Not enriched' }}</td><td>{{ p.decision.replace('_',' ') }}</td></tr>
   {% endfor %}
   </tbody></table></div>
   <p class="hint">No automatic follow-up emails are sent. Inbound replies are classified and surfaced for review; opt-outs and bounces update the suppression list.</p>

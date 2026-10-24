@@ -4,7 +4,8 @@ from .scoring import scorecard_for_display
 
 def ranked_companies(campaign, leads) -> list[dict]:
     ranked = sorted(leads, key=lambda lead: (
-        -lead.fit_score,
+        lead.fit_score is None,
+        -(lead.fit_score or 0),
         -(lead.evidence or {}).get("scorecard", {}).get("criteria", [{}])[0].get("earned", 0),
         lead.company_name.casefold(),
         lead.id,

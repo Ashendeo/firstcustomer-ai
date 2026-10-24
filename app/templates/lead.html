@@ -6,11 +6,11 @@
 {% if lead.source == 'demo' %}<div class="notice">This lead is fictional. Approval can be tested, but sending is blocked.</div>{% endif %}
 <div class="columns">
   <section class="panel">
-    <div class="between"><h2>Prospect qualification</h2><span class="score large">{{ lead.fit_score }}<small>/100</small></span></div>
+    <div class="between"><h2>Prospect qualification</h2><span class="score large">{{ lead.fit_score if lead.fit_score is not none else "Not scored" }}{% if lead.fit_score is not none %}<small>/100</small>{% endif %}</span></div>
     <div class="eyebrow">RANKING AND EXPLANATION</div>
     <p>Rank <strong>#{{ rank }}</strong> of {{ competitor_count }} companies in this campaign.</p>
     {% if scorecard.reconstructed %}
-    <div class="notice">Legacy result: {{ lead.fit_score }}/100 is the originally stored model estimate. The following evidence diagnostic is reconstructed locally from saved records; its {{ scorecard.total }}/100 total did <strong>not</strong> generate the historic score. No API calls were made to reconstruct it.</div>
+    <div class="notice">Legacy result: {{ lead.fit_score if lead.fit_score is not none else "Not scored" }}/100 is the originally stored model estimate. The following evidence diagnostic is reconstructed locally from saved records; its {{ scorecard.total if scorecard.total is not none else "Not scored" }}{% if scorecard.total is not none %}/100{% endif %} total did <strong>not</strong> generate the historic score. No API calls were made to reconstruct it.</div>
     {% else %}
     <p>{{ lead.fit_reason }}</p>
     <p class="hint">Rubric {{ scorecard.version }}. The displayed total equals the sum of the rows below; not a calibrated purchase probability.</p>

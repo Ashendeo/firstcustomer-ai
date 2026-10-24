@@ -233,6 +233,36 @@ outreach, remove the `GMAIL_DEMO_*` settings, restart FastAPI, and verify
 the campaign's live policy separately.
 
 
+## Seller-company research before prospect search
+
+For new **live** campaigns, enter the **company running the campaign** (seller name and public website/domain). The creator remains a lightweight form; the **Create & research campaign** form immediately starts seller research **before** requesting any prospect company search. Existing API clients can still create an unstarted draft with `start_discovery=false` and manually run it later. The form makes the possible paid calls explicit.
+
+1. **Crustdata Company Enrichment:** Checkpointed `POST /company/enrich` with `domains: [seller_domain]` and fields `basic_info`, `headcount`, `locations`, `hiring`. Accepts only an exact-domain match, not a similar company. This is a separately billable API (published example: approximately 2 credits per enriched profile).
+2. **Independent web research:** Two checkpointed Brave Web Search requests for product/company information and public news. Requires `BRAVE_SEARCH_API_KEY` in `.env` (see https://api-dashboard.search.brave.com/). Stores search queries, source URLs, snippets and checkpoint details. Neither an arbitrary user URL fetch nor direct scraping is used.
+3. **Strategy synthesis:** One local Qwen request generates the targeting company segment/query, appropriate buyer roles, business summary, use cases and clearly-labelled **hypotheses** about customer goals. It is constrained by the collected evidence. If evidence or Qwen is unavailable, the workflow **states the missing sources and falls back to the operator's ICP**, rather than hallucinating seller facts or re-fetching paid data.
+4. **Prospecting:** The generated query is submitted to Crustdata Company Search. Never prospect the seller itself. If a result is too sparse to score (missing description/industry/headline), up to `MAX_PROSPECT_ENRICHMENTS` (default **2**) prospect company enrichments may run, each with its own paid-call checkpoint. Set `MAX_PROSPECT_ENRICHMENTS=0` to disable that additional spend.
+
+The research snapshot and source links are displayed on the campaign page and reused on retry from the same campaign's stored checkpoints. *No web or Crustdata work happens just by viewing the dashboard*. Company/Brave usage is additional to existing contact and search API charges. Access may vary by Crustdata plan. Do not paste API keys into the campaign form.
+
+Configuration:
+```dotenv
+CRUSTDATA_API_KEY=<your-existing-key>
+BRAVE_SEARCH_API_KEY=<brave-search-api-key>
+MAX_PROSPECT_ENRICHMENTS=2
+```
+
+Demo mode does not call paid APIs and labels source research as unavailable/fictional. Previous campaigns created without a seller domain keep their prior lookup behavior; create a **new campaign** to use research-first targeting.
+
+### Why scores were zero and how to repair
+
+The first explainable rubric only considered `basic_info.description` as ICP evidence; Crustdata's sparse search rows may lack description, headcount, and people, producing **0 even when nothing negative was known**.
+
+`scorecard-v2` uses observed description, headline, tagline, industry and specialties as company evidence, alongside headcount and actual buyer role. The four 40/20/20/20 criterion weights and evidence paths remain visible. If **no meaningful description, headcount or buyer role** is available, the stored score is SQL NULL and displayed as **Not scored**, not 0. The campaign's policy engine holds unscored prospects; it never auto-emails them.
+
+For existing campaign leads, use **Re-score saved evidence (no credits)** while the campaign is not running and live email outreach is paused. It reads stored Crustdata records only; updates **drafts**, never approved/sent contacts, and records the previous score. If saved evidence is too sparse, the result remains **Not scored** until explicitly enriched; the button cannot invent data.
+
+Run `alembic upgrade head` (revision `0004_seller_research`) before restarting FastAPI. It adds seller identity fields and allows nullable fit scores. Back up your SQLite database first.
+
 ## Optional email sending
 
 Configure a domain with [Resend](https://resend.com/docs) and set:

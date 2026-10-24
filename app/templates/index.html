@@ -4,13 +4,16 @@
 <div class="eyebrow">OVERVIEW</div>
 <h1>Find your next customer.</h1>
 <p class="subtitle">Describe what you sell. We'll research target accounts, identify likely buyers, score the evidence and draft outreach for your approval.</p>
-{% if demo %}<div class="notice">DEMO MODE: All displayed prospects are fictional. No Crustdata, OpenAI or email credits are consumed.</div>{% endif %}
+{% if demo %}<div class="notice">DEMO MODE: All displayed prospects are fictional. No paid company enrichment, web-search or outbound email calls are made.</div>{% endif %}
 <div class="columns">
   <section class="panel">
-    <h2>Create a campaign</h2><p class="hint">Give the agent a specific ideal customer profile.</p>
+    <h2>Create a campaign</h2><p class="hint">Provide your company website and a starting ICP. The agent researches the business before generating a targeting query.</p>
     <form action="/campaigns" method="post">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <label>Campaign name<input required minlength="3" maxlength="140" name="name" value="Sports analytics pilots"></label>
+      <label>Your company name<input name="seller_name" maxlength="200" placeholder="e.g. Acme Sports Technologies"></label>
+      <label>Your company website / domain<input name="seller_domain" maxlength="180" placeholder="e.g. acme.com" {% if not demo %}required{% endif %}></label>
+      <p class="hint">On discovery, the agent will research your business using Crustdata Company Enrichment and Brave web search (requires API credentials), then use that evidence to plan targeting. Research calls are checkpointed.</p>
       <label>Your product<textarea required minlength="10" name="product" rows="3">An AI video analytics platform that turns corporate football matches into highlights and player statistics.</textarea></label>
       <label>Ideal customers<textarea required minlength="10" name="ideal_customer" rows="3">Technology and services companies with 500–5000 employees that may organize corporate sports or wellness activities.</textarea></label>
       <div class="two">
@@ -23,7 +26,9 @@
       </div>
       <p class="hint">Headcount fields add premium Crustdata search charges in live mode.</p>
       <label>Calendly event URL (optional)<input name="booking_url" type="url" placeholder="https://calendly.com/your-team/15min"></label>
-      <button class="primary" type="submit">Create campaign <span>→</span></button>
+      <input type="hidden" name="start_discovery" value="true">
+      <p class="hint">Submitting starts the research workflow immediately. Live mode may incur Crustdata company-enrichment and Brave web-search charges; completed calls are checkpointed.</p>
+      <button class="primary" type="submit">Create &amp; research campaign <span>→</span></button>
     </form>
   </section>
   <section class="panel">

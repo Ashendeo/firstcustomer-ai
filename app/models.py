@@ -17,6 +17,8 @@ class Campaign(Base):
     __tablename__ = "campaigns"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     name: Mapped[str] = mapped_column(String(140))
+    seller_name: Mapped[str] = mapped_column(String(200), default="")
+    seller_domain: Mapped[str] = mapped_column(String(180), default="")
     product: Mapped[str] = mapped_column(Text)
     ideal_customer: Mapped[str] = mapped_column(Text)
     country: Mapped[str] = mapped_column(String(60), default="India")
@@ -45,7 +47,7 @@ class Lead(Base):
     person_title: Mapped[str] = mapped_column(String(180), default="")
     person_profile: Mapped[str] = mapped_column(Text, default="")
     email: Mapped[str] = mapped_column(String(254), default="")
-    fit_score: Mapped[int] = mapped_column(Integer, default=0)
+    fit_score: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     fit_reason: Mapped[str] = mapped_column(Text, default="")
     evidence: Mapped[dict] = mapped_column(JSON, default=dict)
     source: Mapped[str] = mapped_column(String(40), default="crustdata")

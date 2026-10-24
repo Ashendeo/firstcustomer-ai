@@ -27,76 +27,99 @@ def current_role(person: dict | None) -> str:
     return ""
 
 
-def score_company(campaign, company: dict, person: dict | None) -> dict:
+def _observed_company_text(company: dict) -> tuple[str, list[str]]:
     info = company.get("basic_info") or {}
-    description = str(info.get("description") or "")
-    domain = str(info.get("primary_domain") or "")
-    observed = tokens(description)
+    fields = ["description", "headline", "tagline", "summary", "industries",
+              "specialties", "industry", "keywords"]
+    parts, paths = [], []
+    for field in fields:
+        item = info.get(field)
+        if not item:
+            continue
+        if isinstance(item, list):
+            text = " ".join(str(v) for v in item if isinstance(v, (str, int)))
+        elif isinstance(item, str):
+            text = item
+        else:
+            continue
+        if text.strip():
+            parts.append(text[:1500])
+            paths.append("company.basic_info." + field)
+    return " ".join(parts), paths
+
+
+def score_company(campaign, company: dict, person: dict | None) -> dict:
+    """V2: use all observed descriptive attributes; NULL when unscorable."""
+    info = company.get("basic_info") or {}
+    text, sources = _observed_company_text(company)
+    observed = tokens(text)
     desired = tokens(campaign.ideal_customer)
     matched = sorted(observed & desired)
-    # Lexical agreement only; it's NOT a semantic assertion that a buyer is ready.
-    ratio = len(matched) / len(desired) if desired else 0
-    icp = round(40 * min(1, ratio / 0.45)) if description else 0
+    match_ratio = len(matched) / len(desired) if desired else 0.0
+    icp = round(40 * min(1, match_ratio / 0.45)) if observed else 0
 
-    h = (company.get("headcount") or {}).get("total")
+    raw_h = (company.get("headcount") or {}).get("total")
     try:
-        headcount = int(h) if h is not None else None
+        headcount = int(raw_h) if raw_h is not None else None
     except (TypeError, ValueError):
         headcount = None
-    minimum = int(campaign.min_headcount or 0)
-    maximum = int(campaign.max_headcount or 0)
+    min_h = int(campaign.min_headcount or 0)
+    max_h = int(campaign.max_headcount or 0)
     if headcount is None:
-        size, size_reason = 0, "No observed headcount; no size-fit points"
-    elif minimum and headcount < minimum or maximum and headcount > maximum:
-        size, size_reason = 0, f"Observed {headcount} outside target {minimum or 'any'}–{maximum or 'any'}"
-    elif not minimum and not maximum:
-        size, size_reason = 10, f"Observed {headcount}; campaign has no size requirement (neutral)"
+        size, size_note = 0, "Headcount missing: no size points awarded"
+    elif (min_h and headcount < min_h) or (max_h and headcount > max_h):
+        size, size_note = 0, f"Observed {headcount} is outside {min_h or 'any'}–{max_h or 'any'}"
+    elif not min_h and not max_h:
+        size, size_note = 10, "No target-size constraint; observed headcount earns neutral half credit"
     else:
-        size, size_reason = 20, f"Observed {headcount} within requested range"
+        size, size_note = 20, f"Observed {headcount} is within target size range"
 
     title = current_role(person)
-    wanted = [x.strip().lower() for x in campaign.buyer_titles.split(",") if x.strip()]
-    role_score = (20 if title and any(t == title.lower() for t in wanted)
-                  else 12 if title and any(t in title.lower() or title.lower() in t
-                                           for t in wanted)
-                  else 0)
-    role_reason = ("Observed role: " + title if title else "No decision-maker title observed")
-    if title and role_score == 0:
-        role_reason += " (not matched to requested titles)"
+    preferred = [t.strip().lower() for t in campaign.buyer_titles.split(",") if t.strip()]
+    role = 0
+    if title and any(t == title.lower() for t in preferred):
+        role = 20
+    elif title and any(t in title.lower() or title.lower() in t for t in preferred):
+        role = 12
 
-    complete = (10 if description else 0) + (5 if domain else 0) + (5 if (person or {}).get("basic_profile") else 0)
+    domain = str(info.get("primary_domain") or "")
+    profile = (person or {}).get("basic_profile") or {}
+    coverage = (10 if text else 0) + (5 if domain else 0) + (5 if profile else 0)
     criteria = [
         {"key": "icp", "name": "Ideal-customer evidence", "earned": icp, "max": 40,
-         "explanation": (f"{len(matched)} of {len(desired)} unique target terms found in company description"
-                         if description else "No description available"),
-         "source": "company.basic_info.description", "evidence": ", ".join(matched[:14]) or "No shared terms"},
+         "explanation": f"{len(matched)} of {len(desired)} ICP terms observed across supplied descriptive fields",
+         "source": ", ".join(sources) or "company.basic_info (none returned)",
+         "evidence": ", ".join(matched[:14]) or "No verified overlap"},
         {"key": "size", "name": "Company headcount fit", "earned": size, "max": 20,
-         "explanation": size_reason, "source": "company.headcount.total",
+         "explanation": size_note, "source": "company.headcount.total",
          "evidence": str(headcount) if headcount is not None else "Missing"},
-        {"key": "buyer", "name": "Decision-maker role fit", "earned": role_score, "max": 20,
-         "explanation": role_reason,
+        {"key": "buyer", "name": "Decision-maker role fit", "earned": role, "max": 20,
+         "explanation": ("Observed role: " + title) if title else "No buyer title returned",
          "source": "person.experience.employment_details.current.title",
          "evidence": title[:120] if title else "Missing"},
-        {"key": "coverage", "name": "Evidence completeness", "earned": complete, "max": 20,
-         "explanation": "Description (10), domain (5), person profile (5), only when present",
+        {"key": "coverage", "name": "Evidence completeness", "earned": coverage, "max": 20,
+         "explanation": "Descriptive evidence (10), domain (5), named person profile (5)",
          "source": "company.basic_info / person.basic_profile",
-         "evidence": ", ".join(k for k, val in [("description", description), ("domain", domain),
-                            ("person profile", (person or {}).get("basic_profile"))] if val) or "No details"}
+         "evidence": ", ".join(v for v, ok in [
+             ("company descriptors", text), ("domain", domain), ("person", profile)] if ok) or "None"},
     ]
-    score = sum(c["earned"] for c in criteria)
     gaps = []
-    if not description: gaps.append("Company description missing")
+    if not text: gaps.append("No company industry, description or headline was returned")
     if headcount is None: gaps.append("Headcount unavailable")
-    if not title: gaps.append("No target contact identified")
-    if not matched: gaps.append("No direct keyword overlap with ideal-customer description")
-    certainty = "limited" if len(gaps) >= 2 else "partial" if gaps else "reasonable"
+    if not title: gaps.append("No target contact title identified")
+    if not matched: gaps.append("No direct lexical overlap with ideal customer; semantic relevance is not independently verified")
+    scorable = bool(text or headcount is not None or title)
+    score = sum(item["earned"] for item in criteria) if scorable else None
+    certainty = "insufficient" if not scorable else "limited" if len(gaps) >= 2 else "partial" if gaps else "reasonable"
     return {
-        "version": "scorecard-v1", "total": score, "criteria": criteria,
-        "gaps": gaps, "evidence_confidence": certainty,
-        "summary": (f"Matched {len(matched)} ICP terms; headcount: "
-                    f"{headcount if headcount is not None else 'unknown'}; "
-                    f"buyer-role points: {role_score}/20"),
-        "ranking_basis": "Evidence rubric; not a calibrated buying probability",
+        "version": "scorecard-v2", "total": score, "scorable": scorable,
+        "criteria": criteria, "gaps": gaps,
+        "evidence_confidence": certainty,
+        "summary": (f"Observed match: {len(matched)} ICP terms; "
+                    f"headcount: {headcount if headcount is not None else 'unknown'}; "
+                    f"buyer role: {role}/20" if scorable
+                    else "Insufficient company/role evidence to assign a defensible score"),
+        "ranking_basis": "Observable evidence rubric, not a purchase likelihood",
     }
 
 

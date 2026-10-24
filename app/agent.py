@@ -11,6 +11,7 @@ from .models import Campaign, Lead, AuditEvent
 from .checkpoints import checkpointed, fingerprint, CheckpointNeedsReview, get_checkpoint
 from .discovery_trace import search_trace
 from .scoring import score_company
+from .seller_research import research_seller, make_research_plan
 
 logger = logging.getLogger(__name__)
 
@@ -106,14 +107,64 @@ def run_campaign(campaign_id: str):
                     settings.QWEN_MODEL_SERVER.encode("utf-8")
                 ).hexdigest(),
             }
-            plan = checkpointed(
-                db, c.id, "plan",
-                {**config, "revision": "plan-v1", "product": c.product,
-                 "ideal_customer": c.ideal_customer, "country": c.country,
-                 "buyer_titles": c.buyer_titles, "min": c.min_headcount,
-                 "max": c.max_headcount},
-                lambda: make_plan(c),
-            )
+            research = {}
+            if c.seller_domain:
+                # Seller research is the *first* execution stage, ahead of the
+                # prospect plan or Crustdata company discovery.
+                research_data = research_seller(db, c, audit)
+                research_was_cached = get_checkpoint(db, c.id, "seller_research")
+                try:
+                    strategy = checkpointed(
+                        db, c.id, "seller_strategy",
+                        {"revision": "seller-strategy-v1", **config,
+                         "seller_domain": c.seller_domain,
+                         "research_hash": fingerprint(research_data),
+                         "icp": c.ideal_customer, "product": c.product},
+                        lambda: make_research_plan(c, research_data, llm_json),
+                    )
+                except Exception as exc:
+                    # Local Qwen availability should not trigger paid provider
+                    # re-fetches. The strategy uses explicit operator ICP.
+                    logger.warning("Seller strategy model unavailable: %s", type(exc).__name__)
+                    strategy = {
+                        "query": c.ideal_customer[:500],
+                        "titles": [t.strip()[:70] for t in c.buyer_titles.split(",") if t.strip()][:4] or ["Director"],
+                        "summary": research_data["summary"], "use_cases": [],
+                        "hypotheses": [],
+                        "search_rationale": "Model unavailable; using operator ICP.",
+                    }
+                    research_data["limitations"].append("Qwen could not synthesize a research-based plan")
+                research = {**research_data, **{
+                    k: strategy[k] for k in ("summary", "use_cases", "hypotheses",
+                                            "search_rationale") if k in strategy
+                }}
+                research["strategy_query"] = strategy["query"]
+                # Snapshot the full source-grounded strategy. No paid call.
+                checkpointed(
+                    db, c.id, "seller_research",
+                    {"revision": "seller-research-v1", "seller_domain": c.seller_domain,
+                     "data_hash": fingerprint(research)},
+                    lambda: research,
+                )
+                plan = {"query": strategy["query"], "titles": strategy["titles"]}
+                if not research_was_cached:
+                    audit(db, c.id, "seller_research_completed", details={
+                        "domain": c.seller_domain,
+                        "web_sources": len(research.get("sources") or []),
+                        "limitations": research.get("limitations") or [],
+                        "generated_query": plan["query"],
+                    })
+                    db.commit()
+            else:
+                # Preserve original checkpoint signature for legacy campaigns.
+                plan = checkpointed(
+                    db, c.id, "plan",
+                    {**config, "revision": "plan-v1", "product": c.product,
+                     "ideal_customer": c.ideal_customer, "country": c.country,
+                     "buyer_titles": c.buyer_titles, "min": c.min_headcount,
+                     "max": c.max_headcount},
+                    lambda: make_plan(c),
+                )
             c.search_query = plan["query"]
             db.commit()
             api = None if settings.DEMO_MODE else Crustdata()
@@ -146,6 +197,8 @@ def run_campaign(campaign_id: str):
                 company_id = str(company.get("crustdata_company_id") or "")[:80]
                 if not company_name:
                     continue
+                if c.seller_domain and domain.lower().removeprefix("www.") == c.seller_domain.lower():
+                    continue  # Never pitch the seller's own company.
                 identity = (domain.lower() or company_id or company_name.lower())
                 discovery_key = fingerprint({"identity": identity})
                 if discovery_key in seen:
@@ -167,6 +220,35 @@ def run_campaign(campaign_id: str):
                 if lead and (lead.draft_body or lead.status != "draft"):
                     continue
 
+                # Search only returns a sparse profile for many companies.
+                # Enrich up to the configured limit to obtain actual industry /
+                # descriptive evidence rather than manufacturing a 0 score.
+                existing_info = company.get("basic_info") or {}
+                has_description = any(existing_info.get(field) for field in (
+                    "description", "headline", "tagline", "industries", "industry", "specialties"))
+                if (not settings.DEMO_MODE and not has_description and domain
+                        and i < settings.MAX_PROSPECT_ENRICHMENTS):
+                    enrich_key = "prospect_enrich:" + discovery_key[:32]
+                    prior = get_checkpoint(db, c.id, enrich_key)
+                    was_cached = bool(prior and prior.status == "complete")
+                    enriched = checkpointed(
+                        db, c.id, enrich_key,
+                        {"revision": "prospect-company-enrich-v1",
+                         "domain": domain,
+                         "fields": ["basic_info", "headcount", "locations", "hiring"]},
+                        lambda: api.company_enrich(domain),
+                    )
+                    if enriched:
+                        company = {**company, **enriched,
+                                   "basic_info": {**existing_info,
+                                                  **(enriched.get("basic_info") or {})}}
+                    audit(db, c.id, "crustdata_prospect_enrichment", details={
+                        "domain": domain, "from_checkpoint": was_cached,
+                        "attributes": sorted(enriched.keys()),
+                        "match_found": bool(enriched),
+                        "provider_calls_this_run": 0 if was_cached else 1,
+                    })
+                    db.commit()
                 people = []
                 if i < settings.MAX_PEOPLE_SEARCHES:
                     if settings.DEMO_MODE or domain:

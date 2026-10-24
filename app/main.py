@@ -31,8 +31,9 @@ from .outreach import (get_policy, preview_outreach, run_outreach,
                        normalized_email, valid_unsubscribe_signature)
 from .resend_events import handle_resend_event, verify_signature
 from .ranking import ranked_companies
-from .scoring import scorecard_for_display
+from .scoring import scorecard_for_display, score_company
 from .gmail_demo import gmail_demo_address, send_campaign_demo
+from .seller_research import normalize_company_domain
 
 logger = logging.getLogger(__name__)
 
@@ -107,14 +108,18 @@ def index(request: Request, db: Session = Depends(get_db), _: str = Depends(auth
 
 @app.post("/campaigns")
 def create_campaign(
+    tasks: BackgroundTasks,
     name: str = Form(min_length=3, max_length=140),
     product: str = Form(min_length=10, max_length=2000),
+    seller_name: str = Form(default="", max_length=200),
+    seller_domain: str = Form(default="", max_length=180),
     ideal_customer: str = Form(min_length=10, max_length=2000),
     country: str = Form(default="India", max_length=60),
     buyer_titles: str = Form(default="Head of HR,HR Director", max_length=250),
     min_headcount: int = Form(default=0, ge=0, le=10000000),
     max_headcount: int = Form(default=0, ge=0, le=10000000),
     booking_url: str = Form(default="", max_length=500),
+    start_discovery: bool = Form(default=False),
     csrf: str = Form(...),
     db: Session = Depends(get_db),
     _: str = Depends(authorize),
@@ -126,13 +131,27 @@ def create_campaign(
             raise HTTPException(422, "Booking link must be a valid HTTPS Calendly URL")
     if min_headcount and max_headcount and min_headcount > max_headcount:
         raise HTTPException(422, "Minimum headcount cannot exceed maximum")
-    c = Campaign(name=name.strip(), product=product.strip(), ideal_customer=ideal_customer.strip(),
+    if start_discovery and not settings.DEMO_MODE and (
+            not settings.CRUSTDATA_API_KEY or not settings.QWEN_MODEL_SERVER):
+        raise HTTPException(422, "Live seller research requires Crustdata credentials and a local Qwen model")
+    clean_domain = normalize_company_domain(seller_domain)
+    if seller_domain.strip() and not clean_domain:
+        raise HTTPException(422, "Enter a valid public company domain, e.g. acme.com")
+    if not settings.DEMO_MODE and not clean_domain:
+        raise HTTPException(422, "Your company website/domain is required for live campaign research")
+    c = Campaign(name=name.strip(), seller_name=seller_name.strip(), seller_domain=clean_domain,
+                 product=product.strip(), ideal_customer=ideal_customer.strip(),
                  country=country.strip(), buyer_titles=buyer_titles.strip(),
                  min_headcount=min_headcount, max_headcount=max_headcount, booking_url=booking_url.strip())
     db.add(c)
     db.flush()
     audit(db, c.id, "campaign_created", details={"demo": settings.DEMO_MODE})
+    if start_discovery:
+        c.status = "running"
+        audit(db, c.id, "campaign_started", details={"source": "creation"})
     db.commit()
+    if start_discovery:
+        tasks.add_task(run_campaign, c.id)
     return redirect(f"/campaigns/{c.id}")
 
 
@@ -147,7 +166,10 @@ def campaign_detail(campaign_id: str, request: Request, db: Session = Depends(ge
     checkpoints = db.scalars(select(StepCheckpoint).where(StepCheckpoint.campaign_id == campaign.id).order_by(StepCheckpoint.created_at)).all()
     policy = get_policy(db, campaign.id)
     preview = preview_outreach(campaign.id)
-    return page(request, "campaign.html", campaign=campaign, leads=leads, counts=counts,
+    research_checkpoint = next((step for step in checkpoints if step.step_key == "seller_research" and step.status == "complete"), None)
+    seller_research = (research_checkpoint.result or {}).get("value", {}) if research_checkpoint else {}
+    return page(request, "campaign.html", campaign=campaign, seller_research=seller_research,
+                leads=leads, counts=counts,
                 events=events, checkpoints=checkpoints, outreach_policy=policy,
                 outreach_preview=preview, ranked=ranked, trace_events=trace_events,
                 gmail_demo_recipient=gmail_demo_address())
@@ -184,6 +206,47 @@ def run(campaign_id: str, tasks: BackgroundTasks, csrf: str = Form(...), db: Ses
     db.commit()
     tasks.add_task(run_campaign, c.id)
     return redirect(f"/campaigns/{c.id}")
+
+
+@app.post("/campaigns/{campaign_id}/rescore")
+def rescore_saved_evidence(
+    campaign_id: str, confirm: str = Form(...),
+    csrf: str = Form(...), db: Session = Depends(get_db),
+    _: str = Depends(authorize),
+):
+    """Recalculate saved draft evidence; no web/LLM/Crustdata requests."""
+    check_csrf(csrf)
+    campaign = get_campaign(db, campaign_id)
+    if confirm != "RESCORE_SAVED_EVIDENCE":
+        raise HTTPException(422, "Explicit score recalculation confirmation required")
+    policy = get_policy(db, campaign.id)
+    if policy.mode == "live" or campaign.status == "running":
+        raise HTTPException(409, "Pause live outreach and finish discovery before rescoring")
+    leads = db.scalars(select(Lead).where(Lead.campaign_id == campaign_id)).all()
+    changed = 0
+    for lead in leads:
+        if lead.status != "draft":
+            continue  # Never silently alter already-authorized or sent outreach.
+        evidence = lead.evidence or {}
+        company = evidence.get("company_record") or {}
+        person = evidence.get("person_record") or {}
+        if not company:
+            continue
+        card = score_company(campaign, company, person)
+        previous = lead.fit_score
+        if previous == card["total"] and evidence.get("scorecard", {}).get("version") == "scorecard-v2":
+            continue
+        lead.fit_score = card["total"]
+        lead.fit_reason = card["summary"]
+        lead.evidence = {**evidence,
+                         "previous_score": previous,
+                         "scorecard": card}
+        changed += 1
+    audit(db, campaign_id, "saved_evidence_rescored",
+          details={"leads_updated": changed, "provider_calls": 0,
+                   "rubric": "scorecard-v2"})
+    db.commit()
+    return redirect(f"/campaigns/{campaign_id}")
 
 
 @app.post("/campaigns/{campaign_id}/checkpoints/retry")
