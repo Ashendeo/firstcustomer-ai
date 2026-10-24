@@ -66,7 +66,7 @@ def test_default_policy_is_simulation_even_with_autosend_true(client):
     with SessionLocal() as db:
         policy = outreach.get_policy(db, campaign_id)
         assert policy.auto_send is True
-        assert policy.min_score == 85
+        assert policy.min_score == 75
         assert policy.daily_limit == 10
         assert policy.prepare_linkedin_drafts is False
         assert policy.mode == "simulation"
