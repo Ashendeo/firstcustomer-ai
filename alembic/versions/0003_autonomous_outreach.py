@@ -39,6 +39,8 @@ def upgrade():
         sa.Column("campaign_id", sa.String(36), nullable=False),
         sa.Column("email", sa.String(254), nullable=False),
         sa.Column("day_utc", sa.String(10), nullable=False),
+        sa.Column("day_slot", sa.Integer(), nullable=False),
+        sa.UniqueConstraint("day_utc", "day_slot", name="uq_outreach_global_day_slot"),
         sa.Column("state", sa.String(24), nullable=False),
         sa.Column("provider_id", sa.String(150), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
