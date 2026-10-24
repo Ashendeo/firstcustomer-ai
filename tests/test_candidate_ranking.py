@@ -287,3 +287,51 @@ def test_known_person_without_verified_email_remains_saved_prospect(client, toke
     page = client.get(f"/campaigns/{cid}")
     assert "needs email verification" in page.text
     assert "Stage 1 target: 100 companies" in page.text
+
+
+def test_one_hundred_companies_reach_stage_one_without_rank_filtering(client, token, monkeypatch):
+    cid = _campaign(client, token)
+    monkeypatch.setattr(settings, "DEMO_MODE", False)
+    monkeypatch.setattr(settings, "QWEN_PLAN_WITH_MODEL", False)
+    monkeypatch.setattr(settings, "CRUSTDATA_API_KEY", "fake")
+    monkeypatch.setattr(settings, "MAX_COMPANIES", 100)
+    monkeypatch.setattr(settings, "MAX_PROSPECT_ENRICHMENTS", 0)
+    monkeypatch.setattr(settings, "MAX_PEOPLE_SEARCHES", 0)
+    monkeypatch.setattr(settings, "MAX_PEOPLE_FALLBACK_SEARCHES", 0)
+    requests = []
+
+    class Provider:
+        def company_search(self, query, country, limit, *args):
+            requests.append(limit)
+            return [{"basic_info": {"name": f"Prospect {i}",
+                    "primary_domain": f"prospect{i}.example"}}
+                    for i in range(limit)]
+    monkeypatch.setattr(agent, "Crustdata", Provider)
+    with SessionLocal() as db:
+        db.get(Campaign, cid).status = "running"
+        db.commit()
+    agent.run_campaign(cid)
+    with SessionLocal() as db:
+        campaign = db.get(Campaign, cid)
+        assert campaign.status == "ready", campaign.error
+        events = db.scalars(select(AuditEvent).where(
+            AuditEvent.campaign_id == cid,
+            AuditEvent.action.in_(("candidate_search_prioritization",
+                                   "candidate_funnel_summary")))).all()
+        by_action = {e.action: e.details for e in events}
+        assert len(by_action["candidate_search_prioritization"]["candidates"]) == 100
+        assert by_action["candidate_funnel_summary"]["company_search_requested"] == 100
+        assert by_action["candidate_funnel_summary"]["company_search_results"] == 100
+    assert requests == [100]
+    html = client.get(f"/campaigns/{cid}").text
+    assert "Stage 1 company discovery fulfilled its target of 100" in html
+    assert "Stage 1 &mdash; Crustdata search order" in html or "Stage 1 — Crustdata search order" in html
+
+
+def test_stale_max_companies_environment_cannot_reduce_default(monkeypatch):
+    import importlib
+    monkeypatch.setenv("MAX_COMPANIES", "5")
+    module = importlib.reload(settings)
+    assert module.MAX_COMPANIES == 100
+    monkeypatch.delenv("MAX_COMPANIES")
+    importlib.reload(module)
