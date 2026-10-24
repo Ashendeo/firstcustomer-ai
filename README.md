@@ -235,7 +235,7 @@ the campaign's live policy separately.
 
 ## Seller-company research before prospect search
 
-For new **live** campaigns, enter the **company running the campaign** (seller name and public website/domain). The creator remains a lightweight form; after clicking **Run discovery**, the worker executes seller research **before** requesting any prospect company search.
+For new **live** campaigns, enter the **company running the campaign** (seller name and public website/domain). The creator remains a lightweight form; the **Create & research campaign** form immediately starts seller research **before** requesting any prospect company search. Existing API clients can still create an unstarted draft with `start_discovery=false` and manually run it later. The form makes the possible paid calls explicit.
 
 1. **Crustdata Company Enrichment:** Checkpointed `POST /company/enrich` with `domains: [seller_domain]` and fields `basic_info`, `headcount`, `locations`, `hiring`. Accepts only an exact-domain match, not a similar company. This is a separately billable API (published example: approximately 2 credits per enriched profile).
 2. **Independent web research:** Two checkpointed Brave Web Search requests for product/company information and public news. Requires `BRAVE_SEARCH_API_KEY` in `.env` (see https://api-dashboard.search.brave.com/). Stores search queries, source URLs, snippets and checkpoint details. Neither an arbitrary user URL fetch nor direct scraping is used.
