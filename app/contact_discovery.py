@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 from . import settings
 from .checkpoints import checkpointed, fingerprint, get_checkpoint
-from .crustdata import Crustdata as RequestBuilder
+from .crustdata import Crustdata as RequestBuilder, CrustdataPermissionError
 from .discovery_trace import search_trace
 from .market_skill import contact_role_match, prioritize_contacts
 from .outreach import choose_verified_email
@@ -74,6 +74,7 @@ def discover_contact(db, campaign_id: str, domain: str, discovery_key: str,
     """
     examined = []
     attempted_urls = set()
+    contact_budget.setdefault("permission_denied", False)
     chosen = None
     email = ""
     def order_contacts(group):
@@ -85,6 +86,9 @@ def discover_contact(db, campaign_id: str, domain: str, discovery_key: str,
     def check_group(group: list[dict], phase: str):
         nonlocal chosen, email
         for person in group:
+            if contact_budget["permission_denied"]:
+                examined.append(contact_candidate_preview(person, skill, "contact_api_permission_denied"))
+                continue
             url = profile_url(person)
             if url and url in attempted_urls:
                 continue
@@ -105,12 +109,29 @@ def discover_contact(db, campaign_id: str, domain: str, discovery_key: str,
                 else:
                     if not cached:
                         contact_budget["used"] += 1
-                    records = checkpointed(
-                        db, campaign_id, key,
-                        {"revision": "candidate-email-v1", "profile": url,
-                         "company_domain": domain, "field": "contact.business_emails"},
-                        lambda url=url: api.business_email_enrich(url),
-                    )
+                    try:
+                        records = checkpointed(
+                            db, campaign_id, key,
+                            {"revision": "candidate-email-v1", "profile": url,
+                             "company_domain": domain, "field": "contact.business_emails"},
+                            lambda url=url: api.business_email_enrich(url),
+                        )
+                    except CrustdataPermissionError:
+                        # 403 is a plan/entitlement denial, not a missing email.
+                        # No additional contact-enrichment requests should be sent
+                        # during this campaign run. The inner checkpoint stays
+                        # uncertain for explicit operator review.
+                        contact_budget["permission_denied"] = True
+                        reason = "contact_api_permission_denied"
+                        audit(db, campaign_id, "crustdata_contact_access_denied", details={
+                            "endpoint": "/person/contact/enrich",
+                            "domain": domain,
+                            "action": "stopped_contact_enrichment_for_run",
+                            "resolution": "enable_endpoint_access_with_crustdata",
+                        })
+                        db.commit()
+                        examined.append(contact_candidate_preview(person, skill, reason))
+                        break
                     matched = choose_verified_email(records, domain)
                     if matched:
                         email = matched
@@ -150,7 +171,7 @@ def discover_contact(db, campaign_id: str, domain: str, discovery_key: str,
         ("verified_employee_fallback", "people_verified_fallback:", True),
         ("employer_only_fallback", "people_fallback:", False),
     ]:
-        if chosen or settings.DEMO_MODE:
+        if chosen or settings.DEMO_MODE or contact_budget["permission_denied"]:
             break
         if verified_only and not hasattr(api, "people_search_verified"):
             continue
@@ -202,7 +223,8 @@ def discover_contact(db, campaign_id: str, domain: str, discovery_key: str,
         "fallback_used": bool(secondary),
         "fallback_profiles": len(secondary),
         "reason": ("verified_deliverable_company_email" if chosen
-                   else ("contact_enrichment_budget_exhausted" if
+                   else ("contact_api_permission_denied" if contact_budget["permission_denied"]
+                         else "contact_enrichment_budget_exhausted" if
                          contact_budget["used"] >= settings.MAX_CONTACT_ENRICHMENTS
                          else "no_matching_deliverable_business_email")),
     }
