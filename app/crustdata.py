@@ -29,7 +29,8 @@ class Crustdata:
         except httpx.RequestError as exc:
             raise CrustdataError(f"Crustdata request to {path} failed") from exc
 
-    def company_search(self, query: str, country: str, limit: int, min_headcount: int = 0, max_headcount: int = 0) -> list[dict]:
+    @staticmethod
+    def company_search_request(query: str, country: str, limit: int, min_headcount: int = 0, max_headcount: int = 0) -> dict:
         data = {
             "search": {"query": query[:600], "mode": "hybrid"},
             "fields": ["basic_info.name", "basic_info.primary_domain", "basic_info.description", "headcount.total"],
@@ -46,12 +47,17 @@ class Crustdata:
             data["filters"] = conditions[0]
         elif conditions:
             data["filters"] = {"op": "and", "conditions": conditions}
-        response = self.post("/company/search", data)
+        return data
+
+    def company_search(self, query: str, country: str, limit: int, min_headcount: int = 0, max_headcount: int = 0) -> list[dict]:
+        request = self.company_search_request(query, country, limit, min_headcount, max_headcount)
+        response = self.post("/company/search", request)
         return response.get("companies", [])
 
-    def people_search(self, domain: str, titles: list[str], limit: int = 2) -> list[dict]:
+    @staticmethod
+    def people_search_request(domain: str, titles: list[str], limit: int = 2) -> dict:
         if not domain or not titles:
-            return []
+            return {}
         filters = [
             {"field": "experience.employment_details.current.company_website_domain", "type": "=", "value": domain}
         ]
@@ -61,14 +67,20 @@ class Crustdata:
         ]
         if title_filters:
             filters.append({"op": "or", "conditions": title_filters})
-        response = self.post("/person/search", {
+        return {
             "filters": {"op": "and", "conditions": filters},
             "fields": ["basic_profile.name", "basic_profile.headline",
                        "experience.employment_details.current.name",
                        "experience.employment_details.current.title",
                        "social_handles.professional_network_identifier.profile_url"],
             "limit": min(limit, 2),
-        })
+        }
+
+    def people_search(self, domain: str, titles: list[str], limit: int = 2) -> list[dict]:
+        request = self.people_search_request(domain, titles, limit)
+        if not request:
+            return []
+        response = self.post("/person/search", request)
         return response.get("profiles", [])
 
     def business_email_enrich(self, profile_url: str) -> list[dict]:
