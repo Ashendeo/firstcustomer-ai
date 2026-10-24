@@ -179,7 +179,7 @@ def test_live_orchestrator_with_mocked_providers(client, token, monkeypatch):
         assert leads[0].evidence["model_assessment"]["model_score"] == 78
         assert "Why I\'m reaching out to Sample Business" in leads[0].draft_body
         assert "Organizes employee sports events" in leads[0].draft_body
-        assert "utm_content=" not in leads[0].draft_body  # Scheduling follows a positive reply.
+        assert "utm_content=" in leads[0].draft_body  # Prospect can book directly from the first pitch.
 
 
 def test_qwen_empty_response_is_bounded(monkeypatch):

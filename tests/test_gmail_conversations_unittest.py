@@ -32,6 +32,8 @@ class GmailFlowTests(unittest.TestCase):
         g.advance(self.db,self.conv); g.start_conversation(self.db,self.lead); g.advance(self.db,self.conv)
         self.assertEqual(self.mock.call_count,1)
         self.assertIn('football academy',g.messages(self.db,self.lead.id)[0].body)
+        self.assertIn('https://calendly.com/test/demo?',g.messages(self.db,self.lead.id)[0].body)
+        self.assertIn('utm_content=' + self.lead.id,g.messages(self.db,self.lead.id)[0].body)
     def test_positive_and_duplicate_reply(self):
         g.advance(self.db,self.conv)
         raw=self.reply('Interested, sounds good')

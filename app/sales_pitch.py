@@ -3,6 +3,12 @@ import re
 
 
 def sales_pitch(campaign, lead):
+    from . import settings
+    from .agent import safe_booking_link
+    booking_link = safe_booking_link(campaign.booking_url or settings.CALENDLY_BOOKING_URL,
+                                     campaign.id, lead.id)
+    booking_cta = (f"Prefer to book directly? Choose a convenient time: {booking_link}\n\n"
+                   if booking_link else "")
     record = (lead.evidence or {}).get("company_record") or {}
     description = (record.get("basic_info") or {}).get("description") or lead.description
     card = (lead.evidence or {}).get("scorecard") or {}
@@ -22,7 +28,8 @@ def sales_pitch(campaign, lead):
             "not an assumption about your budget or current priorities.\n\n"
             "Is this relevant to your team? If so, I'd be happy to discuss your use case "
             "and arrange a short conversation.\n\n"
-            "If it isn't relevant, let me know and I won't follow up.")
+            + booking_cta
+            + "If it isn't relevant, let me know and I won't follow up.")
 
 
 def new_reply_text(text):

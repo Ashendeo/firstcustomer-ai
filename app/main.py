@@ -698,7 +698,7 @@ async def calendly_webhook(request: Request, db: Session = Depends(get_db)):
     invitee_email = str(payload.get("email") or "").strip().lower()
     conversation = db.get(GmailConversation, lead_id) if lead else None
     expected_email = conversation.recipient if conversation else (lead.email.lower() if lead else "")
-    eligible = bool(conversation and any(m.kind == "booking" and m.state == "sent"
+    eligible = bool(conversation and any(m.kind in ("pitch", "booking") and m.state == "sent"
                     for m in gmail_conversations.messages(db, lead_id)))
     if not (lead and lead.campaign_id == campaign_id and expected_email == invitee_email
             and (eligible or lead.status in ("sent", "replied", "booked", "canceled"))):
