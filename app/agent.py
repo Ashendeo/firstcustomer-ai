@@ -211,22 +211,31 @@ def run_campaign(campaign_id: str):
             # tie-breaker and is stored in the report.
             enriched_candidates = []
             seen_domains = set()
+            enrichment_attempts = 0
             for position, prioritized_item in enumerate(prioritized):
                 company = prioritized_item["company"]
                 info = company.get("basic_info") or {}
+                company_id = str(company.get("crustdata_company_id") or "")
+                name = str(info.get("name") or company.get("name") or "").strip()
                 domain = str(info.get("primary_domain") or "").lower().removeprefix("www.")[:180]
-                if not info.get("name") or (
-                        not settings.DEMO_MODE and not domain):
-                    continue
-                if c.seller_domain and domain == c.seller_domain.lower():
-                    continue
-                identity = domain or str(company.get("crustdata_company_id") or "") or info["name"].lower()
-                if identity in seen_domains:
-                    continue
-                seen_domains.add(identity)
+                # Never silently discard an API result. Even entries without
+                # enough identity/contact data belong in the funnel report.
+                identity = domain or company_id or name.lower() or f"search-position:{position}"
+                drop_reason = ""
+                if not name and not company_id:
+                    drop_reason = "missing_company_identity"
+                elif not settings.DEMO_MODE and not domain:
+                    drop_reason = "missing_company_domain"
+                elif c.seller_domain and domain == c.seller_domain.lower():
+                    drop_reason = "seller_company_excluded"
+                elif identity in seen_domains:
+                    drop_reason = "duplicate_company_result"
+                if not drop_reason:
+                    seen_domains.add(identity)
                 discovery_key = fingerprint({"identity": identity})
-                if (not settings.DEMO_MODE and domain and
-                        position < settings.MAX_PROSPECT_ENRICHMENTS):
+                if (not drop_reason and not settings.DEMO_MODE and domain
+                        and enrichment_attempts < settings.MAX_PROSPECT_ENRICHMENTS):
+                    enrichment_attempts += 1
                     key = "prospect_enrich_advanced:" + discovery_key[:32]
                     previous = get_checkpoint(db, c.id, key)
                     was_cached = bool(previous and previous.status == "complete")
@@ -255,6 +264,8 @@ def run_campaign(campaign_id: str):
                     **prioritized_item,
                     "company": company,
                     "discovery_key": discovery_key,
+                    "contact_block_reason": drop_reason,
+                    "company_label": name or f"Company ID {company_id}" if company_id else name or f"Unidentified result #{position+1}",
                     "enriched_fit": preliminary_card.get("total"),
                     "enriched_scorecard": preliminary_card,
                 })
@@ -262,6 +273,7 @@ def run_campaign(campaign_id: str):
             # Crustdata semantic position is a stable tie-breaker. Missing
             # evidence stays unscored and sorts after scored candidates.
             enriched_candidates.sort(key=lambda item: (
+                bool(item["contact_block_reason"]),
                 item["enriched_fit"] is None,
                 -(item["enriched_fit"] or 0),
                 -item["discovery_priority"],
@@ -271,8 +283,9 @@ def run_campaign(campaign_id: str):
                 "approach": "post-enrichment domain-specific score; Crustdata rank on ties",
                 "candidates": [{
                     "rank": index,
-                    "company": (item["company"].get("basic_info") or {}).get("name", ""),
+                    "company": item["company_label"],
                     "domain": (item["company"].get("basic_info") or {}).get("primary_domain", ""),
+                    "contact_block_reason": item["contact_block_reason"],
                     "provider_rank": item["provider_rank"],
                     "first_stage_index": item["discovery_priority"],
                     "company_score": item["enriched_fit"],
@@ -287,12 +300,17 @@ def run_campaign(campaign_id: str):
             for i, prioritized_item in enumerate(enriched_candidates):
                 company = prioritized_item["company"]
                 info = company.get("basic_info") or {}
-                company_name = str(info.get("name") or "")[:200]
+                company_name = prioritized_item["company_label"][:200]
                 domain = str(info.get("primary_domain") or "").lower().removeprefix("www.")[:180]
                 company_id = str(company.get("crustdata_company_id") or "")[:80]
-                if not company_name or (not settings.DEMO_MODE and not domain):
-                    continue
-                if c.seller_domain and domain == c.seller_domain.lower():
+                if prioritized_item["contact_block_reason"]:
+                    candidate_outcomes.append({
+                        "company": company_name, "domain": domain,
+                        "score": prioritized_item["enriched_fit"],
+                        "status": prioritized_item["contact_block_reason"],
+                        "provider_rank": prioritized_item["provider_rank"],
+                        "first_stage_index": prioritized_item["discovery_priority"],
+                    })
                     continue
                 identity = domain or company_id or company_name.lower()
                 discovery_key = fingerprint({"identity": identity})
@@ -382,17 +400,23 @@ def run_campaign(campaign_id: str):
                             person = candidate
                             break
                 if not verified_email:
+                    contact_reason = (
+                        "no_contact_profiles" if not people
+                        else "person_search_budget_exhausted"
+                        if i >= settings.MAX_PEOPLE_SEARCHES
+                        else "no_deliverable_work_email"
+                    )
                     candidate_outcomes.append({
                         "company": company_name, "domain": domain,
                         "score": candidate_score.get("total"),
                         "status": "skipped_no_verified_business_email",
+                        "reason": contact_reason,
                         "provider_rank": prioritized_item["provider_rank"],
                         "first_stage_index": prioritized_item["discovery_priority"],
                     })
                     audit(db, c.id, "candidate_skipped_no_verified_email", details={
                         "company": company_name, "domain": domain,
-                        "reason": ("no_matching_deliverable_business_email"
-                                   if people else "no_contact_profiles"),
+                        "reason": contact_reason,
                         "candidate_fit_score": candidate_score.get("total"),
                         "max_contact_enrichments": settings.MAX_CONTACT_ENRICHMENTS,
                     })
@@ -495,6 +519,22 @@ def run_campaign(campaign_id: str):
                     {**item, "final_rank": ix}
                     for ix, item in enumerate(candidate_outcomes, 1)
                 ],
+            })
+            audit(db, c.id, "candidate_funnel_summary", details={
+                "company_search_results": len(companies),
+                "stage1_ranked": len(prioritized),
+                "stage2_ranked": len(enriched_candidates),
+                "advanced_enrichments_attempted": enrichment_attempts,
+                "people_search_limit": settings.MAX_PEOPLE_SEARCHES,
+                "contact_enrichment_limit": settings.MAX_CONTACT_ENRICHMENTS,
+                "new_leads": sum(item["status"] == "lead_created" for item in candidate_outcomes),
+                "skipped_or_existing": sum(item["status"] != "lead_created" for item in candidate_outcomes),
+                "outcome_counts": {
+                    status: sum(item["status"] == status for item in candidate_outcomes)
+                    for status in sorted({item["status"] for item in candidate_outcomes})
+                },
+                "search_empty": len(companies) == 0,
+                "note": "Ranking never filters by the 75-point outreach threshold. Lead creation requires an exact-domain deliverable work email.",
             })
             db.commit()
 
