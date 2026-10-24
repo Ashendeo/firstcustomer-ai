@@ -74,21 +74,25 @@ def test_crustdata_request_shapes(monkeypatch):
 
 
 def test_qwen_adapter(monkeypatch):
-    import sys
-    from types import ModuleType
-    from app.qwen_runtime import generate_json, _json_object, QwenResponseError
-    assert _json_object('thinking...\n```json\n{"score": 5}\n```') == {"score": 5}
-    class FakeModel:
-        def chat(self, messages, stream):
-            assert stream is False
-            assert messages[1]["role"] == "user"
-            return [{"role": "assistant", "content": '{"query":"software firms"}'}]
-    package = ModuleType("qwen_agent")
-    module = ModuleType("qwen_agent.llm")
-    module.get_chat_model = lambda cfg: FakeModel()
-    monkeypatch.setitem(sys.modules, "qwen_agent", package)
-    monkeypatch.setitem(sys.modules, "qwen_agent.llm", module)
+    from app import qwen_runtime
+    from app.qwen_runtime import generate_json, _json_object
+    assert _json_object('thinking...\\n```json\\n{"score": 5}\\n```') == {"score": 5}
+    calls = []
+    def fake_post(url, json, timeout):
+        calls.append((url, json, timeout))
+        assert url == "http://localhost:11434/api/chat"
+        assert json["think"] is False
+        assert json["format"] == "json"
+        assert json["stream"] is False
+        class Response:
+            def raise_for_status(self): pass
+            def json(self):
+                return {"message": {"content": '{"query":"software firms"}'},
+                        "done_reason": "stop", "eval_count": 20}
+        return Response()
+    monkeypatch.setattr(qwen_runtime.httpx, "post", fake_post)
     assert generate_json("Plan", {"x": 1}) == {"query": "software firms"}
+    assert len(calls) == 1  # no hidden Qwen-Agent->Ollama second attempt
 
 
 def test_booking_signature_and_matching(client, token, monkeypatch):
@@ -169,31 +173,39 @@ def test_live_orchestrator_with_mocked_providers(client, token, monkeypatch):
         assert "utm_content=" in leads[0].draft_body
 
 
-def test_qwen_empty_response_recovers_with_ollama(monkeypatch):
-    """Thinking-only output must retry with native Ollama JSON mode."""
-    import sys
-    from types import ModuleType
+def test_qwen_empty_response_is_bounded(monkeypatch):
+    """Even an empty model response triggers no implicit retry."""
+    import pytest
     from app import qwen_runtime
-    class ThinkingModel:
-        def chat(self, messages, stream):
-            assert stream is False
-            return [{"role": "assistant", "content": ""}]
-    fake_llm = ModuleType("qwen_agent.llm")
-    fake_llm.get_chat_model = lambda cfg: ThinkingModel()
-    monkeypatch.setitem(sys.modules, "qwen_agent", ModuleType("qwen_agent"))
-    monkeypatch.setitem(sys.modules, "qwen_agent.llm", fake_llm)
-
+    from app.qwen_runtime import QwenResponseError, generate_json
+    calls = []
     def fake_post(url, json, timeout):
-        assert url == "http://localhost:11434/api/chat"
-        assert json["think"] is False
-        assert json["format"] == "json"
+        calls.append(url)
         class Response:
             def raise_for_status(self): pass
-            def json(self): return {"message": {"content": '{"query":"sports companies","titles":["CTO"]}'}}
+            def json(self): return {"message": {"content": ""}, "done_reason": "length"}
         return Response()
     monkeypatch.setattr(qwen_runtime.httpx, "post", fake_post)
-    monkeypatch.setattr(settings, "QWEN_MODEL_SERVER", "http://localhost:11434/v1")
-    assert qwen_runtime.generate_json("Find targets", {"product": "sports"})["query"] == "sports companies"
+    with pytest.raises(QwenResponseError, match="empty answer"):
+        generate_json("Plan", {"product": "sports"})
+    assert len(calls) == 1
+
+
+def test_no_planning_model_call_by_default(monkeypatch):
+    import app.agent as agent
+    from app.models import Campaign
+    monkeypatch.setattr(settings, "DEMO_MODE", False)
+    monkeypatch.setattr(settings, "QWEN_PLAN_WITH_MODEL", False)
+    def forbid_model(*args):
+        raise AssertionError("Planning should not invoke Qwen by default")
+    monkeypatch.setattr(agent, "llm_json", forbid_model)
+    campaign = Campaign(product="Sports analysis",
+                        ideal_customer="Sports clubs and academies",
+                        buyer_titles="Owner,Founder")
+    assert agent.make_plan(campaign) == {
+        "query": "Sports clubs and academies",
+        "titles": ["Owner", "Founder"],
+    }
 
 
 def test_qwen_json_parser_skips_thinking_json():
