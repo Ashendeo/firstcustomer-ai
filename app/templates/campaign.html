@@ -9,6 +9,24 @@
 {% elif campaign.status == 'running' %}<div class="notice">Discovery is running. Refresh this page to see new leads. This demo uses an in-process job, so a deployment restart can interrupt it.</div>
 <form action="/campaigns/{{ campaign.id }}/recover-interrupted" method="post" class="action-row"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="confirm" value="PROCESS_STOPPED"><button type="submit">Recover interrupted run</button><span class="hint">Only after restarting the FastAPI process and confirming no prior worker is running.</span></form>
 {% endif %}
+<section class="panel">
+  <h2>Seller company research &amp; prospecting strategy</h2>
+  <p class="hint">Seller: {{ campaign.seller_name or 'Not provided' }} · {{ campaign.seller_domain or 'Website not provided (legacy campaign)' }}. This research precedes prospect search. Verifiable observations and inferred customer hypotheses are separated.</p>
+  {% if seller_research %}
+    <p><strong>Business summary:</strong> {{ seller_research.summary }}</p>
+    <p><strong>Proposed customer use cases:</strong> {{ seller_research.use_cases|join('; ') or 'Not established' }}</p>
+    <p><strong>Goals / pain hypotheses:</strong> {{ seller_research.hypotheses|join('; ') or 'Not established' }}</p>
+    {% if seller_research.search_rationale %}<p><strong>Search rationale:</strong> {{ seller_research.search_rationale }}</p>{% endif %}
+    {% if seller_research.sources %}
+      <p><strong>Web research sources</strong></p>
+      <ul>{% for source in seller_research.sources %}<li><a href="{{ source.url }}" rel="noopener noreferrer" target="_blank">{{ source.title }}</a></li>{% endfor %}</ul>
+    {% else %}<p class="hint">No external web citations were available for this research.</p>{% endif %}
+    {% if seller_research.limitations %}<p class="hint">Research limitations: {{ seller_research.limitations|join('; ') }}</p>{% endif %}
+    <p><strong>Generated search query:</strong> {{ campaign.search_query or 'Not generated yet' }}</p>
+  {% else %}
+    <p class="hint">Research has not run yet. Use Run discovery above; this is the first stage. Older campaigns without a seller domain fall back to your entered ICP.</p>
+  {% endif %}
+</section>
 <div class="stats">
   <div class="stat"><div class="statvalue">{{ leads|length }}</div><span>Accounts found</span></div>
   <div class="stat"><div class="statvalue">{{ leads|selectattr('person_name')|list|length }}</div><span>Contacts identified</span></div>
