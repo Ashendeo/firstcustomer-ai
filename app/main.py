@@ -20,7 +20,8 @@ from . import settings
 from .agent import audit, run_campaign
 from .db import get_db
 from .integrations import IntegrationError, send_email, verify_calendly_signature
-from .models import AuditEvent, Campaign, Lead, ProcessedWebhook
+from .models import AuditEvent, Campaign, Lead, ProcessedWebhook, StepCheckpoint
+from .checkpoints import get_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,8 @@ def campaign_detail(campaign_id: str, request: Request, db: Session = Depends(ge
     leads = db.scalars(select(Lead).where(Lead.campaign_id == campaign.id).order_by(Lead.fit_score.desc())).all()
     counts = {s: sum(l.status == s for l in leads) for s in ("draft", "approved", "sending", "sent", "booked", "canceled")}
     events = db.scalars(select(AuditEvent).where(AuditEvent.campaign_id == campaign.id).order_by(AuditEvent.created_at.desc()).limit(20)).all()
-    return page(request, "campaign.html", campaign=campaign, leads=leads, counts=counts, events=events)
+    checkpoints = db.scalars(select(StepCheckpoint).where(StepCheckpoint.campaign_id == campaign.id).order_by(StepCheckpoint.created_at)).all()
+    return page(request, "campaign.html", campaign=campaign, leads=leads, counts=counts, events=events, checkpoints=checkpoints)
 
 
 @app.post("/campaigns/{campaign_id}/run")
@@ -141,17 +143,75 @@ def run(campaign_id: str, tasks: BackgroundTasks, csrf: str = Form(...), db: Ses
         raise HTTPException(409, "Campaign has already been started")
     if not settings.DEMO_MODE and (not settings.CRUSTDATA_API_KEY or not settings.QWEN_MODEL or not settings.QWEN_MODEL_SERVER):
         raise HTTPException(422, "Live mode requires CRUSTDATA_API_KEY and QWEN_MODEL/QWEN_MODEL_SERVER")
-    # Failed partially-completed discovery may be restarted; no already-sent lead is ever removed.
-    prior = db.scalars(select(Lead).where(Lead.campaign_id == c.id)).all()
-    if any(l.status not in ("draft",) for l in prior):
-        raise HTTPException(409, "Cannot retry a campaign with approved or sent leads")
-    for lead in prior:
-        db.delete(lead)
+    # Older campaigns could have made paid calls before checkpoints existed.
+    # Do not silently repeat those legacy calls: records are insufficient to
+    # reconstruct every intermediate response or original Qwen prompt.
+    if c.status == "failed":
+        has_checkpoint = db.scalar(select(StepCheckpoint.id).where(
+            StepCheckpoint.campaign_id == c.id
+        ).limit(1))
+        has_old_leads = db.scalar(select(Lead.id).where(
+            Lead.campaign_id == c.id
+        ).limit(1))
+        if not has_checkpoint and (c.search_query or has_old_leads):
+            raise HTTPException(
+                409,
+                "Legacy campaign has paid work but no checkpoints; cannot safely "
+                "retry. Start a new campaign instead of accidentally refetching."
+            )
+    # Preserve all existing leads and completed metered-call checkpoints.
+    # Each pending step is evaluated independently by the worker.
     c.status, c.error = "running", ""
     audit(db, c.id, "campaign_started")
     db.commit()
     tasks.add_task(run_campaign, c.id)
     return redirect(f"/campaigns/{c.id}")
+
+
+@app.post("/campaigns/{campaign_id}/checkpoints/retry")
+def authorize_checkpoint_retry(
+    campaign_id: str, step_key: str = Form(...),
+    confirm: str = Form(...), csrf: str = Form(...), db: Session = Depends(get_db),
+    _: str = Depends(authorize),
+):
+    """Manual, potentially chargeable replay of ONE ambiguous provider call."""
+    check_csrf(csrf)
+    campaign = get_campaign(db, campaign_id)
+    if confirm != "POSSIBLE_DUPLICATE_CHARGE":
+        raise HTTPException(422, "Confirm that replaying this call might be billed again")
+    if campaign.status != "failed":
+        raise HTTPException(409, "Stop the running campaign before authorizing a replay")
+    step = get_checkpoint(db, campaign_id, step_key)
+    if step is None:
+        raise HTTPException(404, "Checkpoint not found")
+    if step.status not in ("uncertain", "in_flight"):
+        raise HTTPException(409, "Only uncertain/in-flight calls can be authorized for replay")
+    step.status = "retry_authorized"
+    audit(db, campaign_id, "checkpoint_replay_authorized",
+          details={"step": step_key, "previous_attempts": step.attempts})
+    db.commit()
+    return redirect(f"/campaigns/{campaign_id}")
+
+
+@app.post("/campaigns/{campaign_id}/recover-interrupted")
+def recover_interrupted(
+    campaign_id: str, confirm: str = Form(...),
+    csrf: str = Form(...), db: Session = Depends(get_db),
+    _: str = Depends(authorize),
+):
+    """Operator-only recovery after confirming the old process has stopped."""
+    check_csrf(csrf)
+    if confirm != "PROCESS_STOPPED":
+        raise HTTPException(422, "Confirm that the previous worker has stopped")
+    campaign = get_campaign(db, campaign_id)
+    if campaign.status != "running":
+        raise HTTPException(409, "Campaign is not marked running")
+    campaign.status = "failed"
+    campaign.error = ("Interrupted run marked failed by operator. "
+                      "Review uncertain/in-flight checkpoints before resuming.")
+    audit(db, campaign_id, "interrupted_run_recovered")
+    db.commit()
+    return redirect(f"/campaigns/{campaign_id}")
 
 
 @app.get("/leads/{lead_id}", response_class=HTMLResponse)
@@ -231,8 +291,10 @@ def send(lead_id: str, csrf: str = Form(...), db: Session = Depends(get_db), _: 
 def campaign_json(campaign_id: str, db: Session = Depends(get_db), _: str = Depends(authorize)):
     c = get_campaign(db, campaign_id)
     leads = db.scalars(select(Lead).where(Lead.campaign_id == c.id)).all()
+    checkpoints = db.scalars(select(StepCheckpoint).where(StepCheckpoint.campaign_id == c.id)).all()
     return {
         "id": c.id, "status": c.status, "error": c.error, "search_query": c.search_query,
+        "checkpoints": [{"step": s.step_key, "status": s.status, "attempts": s.attempts} for s in checkpoints],
         "leads": [{"id": l.id, "company": l.company_name, "domain": l.domain,
                    "person": l.person_name, "score": l.fit_score, "status": l.status,
                    "source": l.source} for l in leads],
