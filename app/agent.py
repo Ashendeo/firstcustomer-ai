@@ -336,7 +336,8 @@ def run_campaign(campaign_id: str):
                     continue
 
                 people = []
-                if i < settings.MAX_PEOPLE_SEARCHES and (settings.DEMO_MODE or domain):
+                people_search_attempted = i < settings.MAX_PEOPLE_SEARCHES and (settings.DEMO_MODE or bool(domain))
+                if people_search_attempted:
                     people_key = f"people:{discovery_key[:32]}"
                     old = get_checkpoint(db, c.id, people_key)
                     people_was_cached = bool(old and old.status == "complete")
@@ -363,6 +364,8 @@ def run_campaign(campaign_id: str):
                                    if skill else score_company(c, company, people[0] if people else None))
                 person = None
                 verified_email = ""
+                valid_profile_urls = 0
+                email_enrichment_attempted = False
                 if settings.DEMO_MODE and people:
                     # Reserved example.com fixture, never a deliverable live contact.
                     person = people[0]
@@ -372,9 +375,13 @@ def run_campaign(campaign_id: str):
                         social = ((candidate.get("social_handles") or {}).get(
                             "professional_network_identifier") or {})
                         profile_url = str(social.get("profile_url") or "")
-                        if not profile_url or contact_attempts >= settings.MAX_CONTACT_ENRICHMENTS:
+                        if not profile_url:
+                            continue
+                        valid_profile_urls += 1
+                        if contact_attempts >= settings.MAX_CONTACT_ENRICHMENTS:
                             continue
                         contact_attempts += 1
+                        email_enrichment_attempted = True
                         key = "candidate_email:" + discovery_key[:24] + ":" + fingerprint(
                             {"profile": profile_url})[:16]
                         prior = get_checkpoint(db, c.id, key)
@@ -401,10 +408,11 @@ def run_campaign(campaign_id: str):
                             break
                 if not verified_email:
                     contact_reason = (
-                        "no_contact_profiles" if not people
-                        else "person_search_budget_exhausted"
-                        if i >= settings.MAX_PEOPLE_SEARCHES
-                        else "no_deliverable_work_email"
+                        "people_search_budget_exhausted" if not people_search_attempted
+                        else "no_contact_profiles_returned" if not people
+                        else "no_professional_profile_urls" if valid_profile_urls == 0
+                        else "contact_enrichment_budget_exhausted" if not email_enrichment_attempted
+                        else "no_matching_deliverable_business_email"
                     )
                     candidate_outcomes.append({
                         "company": company_name, "domain": domain,
