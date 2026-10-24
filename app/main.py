@@ -48,6 +48,9 @@ async def lifespan(app):
     stop = threading.Event()
     worker = None
     if settings.GMAIL_AUTOMATION_ENABLED:
+        from .db import engine
+        from .gmail_schema import require_gmail_schema
+        require_gmail_schema(engine)
         worker = threading.Thread(target=gmail_conversations.worker_loop, args=(stop,), daemon=True)
         worker.start()
     yield

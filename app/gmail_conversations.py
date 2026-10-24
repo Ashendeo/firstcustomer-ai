@@ -319,6 +319,8 @@ def tick():
     outcome = {'processed': 0, 'errors': 0}
     try:
         with SessionLocal() as db:
+            from .gmail_schema import require_gmail_schema
+            require_gmail_schema(db.get_bind())
             ids = list(db.scalars(select(GmailConversation.lead_id).where(
                 GmailConversation.state.notin_(['booked', 'canceled', 'paused', 'opt_out', 'negative', 'later', 'out_of_office']))))
         for lead_id in ids:
@@ -345,6 +347,10 @@ def worker_loop(stop):
     while not stop.is_set():
         try:
             tick()
-        except Exception:
+        except Exception as exc:
+            from .gmail_schema import GmailSchemaNotReady
+            if isinstance(exc, GmailSchemaNotReady):
+                log.error('%s', exc)
+                return  # Schema needs an operator migration, not another poll.
             log.exception('Gmail worker tick failed')
         stop.wait(settings.GMAIL_POLL_SECONDS)
