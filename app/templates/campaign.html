@@ -101,5 +101,5 @@
   </tbody></table></div>
   <p class="hint">No automatic follow-up emails are sent. Inbound replies are classified and surfaced for review; opt-outs and bounces update the suppression list.</p>
 </section>
-<section class="panel narrow"><h2>Execution history</h2>{% for e in events %}<div class="history"><span class="dot"></span><div><strong>{{ e.action.replace('_',' ')|title }}</strong><div class="small">{{ e.created_at.strftime('%d %b %Y · %H:%M UTC') }}</div></div></div>{% endfor %}</section>
+<section class="panel narrow"><h2>Execution history</h2>{% for e in events %}<div class="history"><span class="dot"></span><div><strong>{{ e.action.replace('_',' ')|title }}</strong>{% if e.action == 'outreach_worker_completed' %}<div class="small">{{ e.details.sent }} sent · {{ e.details.held }} held{% if e.details.reasons %} · Reasons: {{ e.details.reasons|join(', ') }}{% endif %}</div>{% endif %}<div class="small">{{ e.created_at.strftime('%d %b %Y · %H:%M UTC') }}</div></div></div>{% endfor %}</section>
 {% endblock %}
