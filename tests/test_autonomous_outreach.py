@@ -40,6 +40,7 @@ def configure_live(campaign_id, monkeypatch, *, country="US"):
     monkeypatch.setattr(settings, "DEMO_MODE", False)
     monkeypatch.setattr(settings, "PUBLIC_BASE_URL", "https://app.example.com")
     monkeypatch.setattr(settings, "RESEND_API_KEY", "test-only")
+    monkeypatch.setattr(settings, "CRUSTDATA_API_KEY", "fake-for-tests")
     monkeypatch.setattr(settings, "RESEND_WEBHOOK_SECRET", "whsec_" + base64.b64encode(b"webhook-testing-secret").decode())
     monkeypatch.setattr(settings, "FROM_EMAIL", "sender@mydomain.example")
     with SessionLocal() as db:
@@ -155,10 +156,15 @@ def test_live_activation_requires_operator_and_real_config(client, token, monkey
         p.mode = "simulation"
         p.authorized_at = None
         db.commit()
+    # Activation automatically kicks off eligible outreach for ready campaigns;
+    # suppress external calls in this integration test.
+    sent = []
+    monkeypatch.setattr(outreach, "send_email", lambda to, subject, body, lead_id, *, reply_to: sent.append(to) or "activation-provider")
     allowed = client.post(f"/campaigns/{campaign_id}/outreach/activate", data={
         "csrf": token, "confirm": "I_AUTHORIZE_LIVE_OUTREACH",
     }, follow_redirects=False)
     assert allowed.status_code == 303
+    assert len(sent) == 1
 
 
 def _sign(payload, secret, event_id):
