@@ -52,8 +52,8 @@
       {% if lead.status == 'draft' %}
       <form method="post" action="/leads/{{ lead.id }}/approve" class="action-row"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="primary">Approve this draft ✓</button></form>
       {% elif lead.status == 'approved' %}
-      <form method="post" action="/leads/{{ lead.id }}/send" class="action-row"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="primary" {% if demo or not has_resend or not lead.email %}disabled{% endif %}>Send approved email →</button></form>
-      <p class="hint">{% if demo %}Disabled for fictional demo data.{% elif not has_resend %}Configure RESEND_API_KEY and FROM_EMAIL to enable sending.{% elif not lead.email %}Save a verified business email first.{% else %}Sends one message with an idempotency key. Check consent and relevance before continuing.{% endif %}</p>
+      <form method="post" action="/leads/{{ lead.id }}/send" class="action-row"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="primary" {% if demo or gmail_demo_enabled or not has_resend or not lead.email %}disabled{% endif %}>Send approved email →</button></form>
+      <p class="hint">{% if gmail_demo_enabled %}Private Gmail sandbox is active: real Resend delivery is disabled. Use the campaign demo button instead.{% elif demo %}Disabled for fictional demo data.{% elif not has_resend %}Configure RESEND_API_KEY and FROM_EMAIL to enable sending.{% elif not lead.email %}Save a verified business email first.{% else %}Sends one message with an idempotency key. Check consent and relevance before continuing.{% endif %}</p>
       {% endif %}
     {% else %}
       <div class="field-preview"><strong>{{ lead.draft_subject }}</strong><pre>{{ lead.draft_body }}</pre></div>
