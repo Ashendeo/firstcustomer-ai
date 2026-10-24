@@ -159,7 +159,9 @@ def run(campaign_id: str, tasks: BackgroundTasks, csrf: str = Form(...), db: Ses
                 "Legacy campaign has paid work but no checkpoints; cannot safely "
                 "retry. Start a new campaign instead of accidentally refetching."
             )
-    # Preserve all existing leads and completed metered-call checkpoints.\n    # Each pending step is evaluated independently by the worker.\n    c.status, c.error = "running", ""
+    # Preserve all existing leads and completed metered-call checkpoints.
+    # Each pending step is evaluated independently by the worker.
+    c.status, c.error = "running", ""
     audit(db, c.id, "campaign_started")
     db.commit()
     tasks.add_task(run_campaign, c.id)
