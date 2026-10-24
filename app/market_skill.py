@@ -91,6 +91,29 @@ def validated_buying_committee(category: str, value) -> list[dict]:
     return accepted if len(accepted) >= 2 else [dict(item) for item in defaults]
 
 
+def contact_role_match(person: dict, skill: dict) -> dict:
+    """Rank by actual CURRENT job title vs cached responsibility hypothesis."""
+    from .scoring import current_role
+    title = current_role(person).strip().lower()
+    if not title:
+        return {"match": 0, "function": "", "reason": "No current title observed", "target_role": ""}
+    for rank, item in enumerate(skill.get("buying_committee") or []):
+        target = str(item["role"]).lower()
+        if title == target:
+            return {**{"match": max(1, 100 - rank * 10)}, "target_role": item["role"],
+                    "function": item["function"], "reason": item["reason"]}
+        if target in title or title in target:
+            return {"match": max(1, 75 - rank * 10), "target_role": item["role"],
+                    "function": item["function"], "reason": item["reason"]}
+    return {"match": 0, "target_role": "", "function": "",
+            "reason": "Observed job title did not match inferred buying committee"}
+
+
+def prioritize_contacts(people: list[dict], skill: dict) -> list[dict]:
+    """Prefer problem owner/budget holder matches instead of response list order."""
+    return sorted(people, key=lambda p: -contact_role_match(p, skill)["match"])
+
+
 def market_category(campaign, research: dict) -> str:
     text = " ".join((campaign.product, campaign.ideal_customer,
                      str((research.get("company_data") or {}).get("description") or ""))).lower()
