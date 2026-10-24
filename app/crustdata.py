@@ -105,3 +105,20 @@ class Crustdata:
             person_data = match.get("person_data") or {}
             emails += ((person_data.get("contact") or {}).get("business_emails") or [])
         return [e for e in emails if isinstance(e, dict)]
+
+    def company_enrich(self, domain: str) -> dict:
+        """One domain, company identity and firmographic context (billable)."""
+        body = {
+            "domains": [domain],
+            "fields": ["basic_info", "headcount", "locations", "hiring"],
+        }
+        response = self.post("/company/enrich", body)
+        if not isinstance(response, list):
+            raise CrustdataError("Unexpected company enrichment response shape")
+        matching = (response[0] or {}).get("matches") or [] if response else []
+        for match in sorted(matching, key=lambda x: x.get("confidence_score") or 0, reverse=True):
+            company = (match or {}).get("company_data") or {}
+            found = ((company.get("basic_info") or {}).get("primary_domain") or "").lower()
+            if found.removeprefix("www.") == domain.lower().removeprefix("www."):
+                return company
+        return {}
