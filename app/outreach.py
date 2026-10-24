@@ -127,6 +127,9 @@ def outreach_footer(lead: Lead, policy: OutreachPolicy) -> str:
 
 
 def ready_for_live(policy: OutreachPolicy) -> str:
+    from .gmail_demo import gmail_demo_address
+    if gmail_demo_address():
+        return "gmail_demo_sink_active"
     if not settings.RESEND_API_KEY or not settings.FROM_EMAIL:
         return "missing_resend_configuration"
     if not settings.CRUSTDATA_API_KEY:

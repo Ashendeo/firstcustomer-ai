@@ -159,6 +159,80 @@ Incoming Resend events are signature-verified, deduplicated and correlated by pr
 
 Run database migration `alembic upgrade head` to create the `0003_autonomous_outreach` tables before starting the app.
 
+## Explainable ranking and Crustdata query history
+
+Prospect ranking is now explicit and repeatable. New leads get a **scorecard-v1**
+based on **40 points** for observable ideal-customer text overlap, **20** for
+headcount range suitability, **20** for decision-maker title suitability, and
+**20** for evidence completeness (description/domain/person). The displayed
+score is the *exact sum* of rubric criteria. Each criterion includes its
+source attribute, observed value, rule, and points earned. Missing attributes
+earn no invented points; headcount without a stated target range receives a
+neutral 10/20. This is a conservative lexical evidence rank, **not** a
+calibrated probability of buying, an LLM certainty measure, or verified intent.
+
+Qwen's narrative assessment and its original proposed score are retained
+separately. Historic leads with a Qwen score remain unchanged; the UI labels
+their locally reconstructed evidence diagnostic **not the original source of
+the historic score**. This avoids rewriting lead scores or auto-send
+eligibility on prior campaigns.
+
+The campaign page shows a company ranking table with relative strengths and
+evidence gaps, plus a detailed **Crustdata execution trace**. The exact JSON
+request body is built from the same pure function as the actual HTTP call:
+`POST /company/search` and `POST /person/search`, including hybrid
+search query, filters, requested fields and limit. History records the number
+of entities found, observed response attribute *names* (not personal record
+values), and whether the result was reused from a completed checkpoint.
+Browsing these views **never** performs an additional Crustdata or model call.
+Only searches run with this feature create detailed request-trace events;
+older campaigns continue to show their existing audit/checkpoint records.
+
+## Private Gmail demonstration: same sender and recipient
+
+This is **separate** from live autonomous Resend outreach. The private Gmail
+button sends up to 10 existing outreach drafts as sandbox samples to your
+own Gmail inbox and NEVER uses a real prospect's email as the SMTP recipient.
+A demo message clearly says it was not sent to the prospect. Real lead
+records, statuses and verified business emails remain unchanged.
+
+Configure your local, uncommitted `.env` with:
+
+```dotenv
+GMAIL_DEMO_SENDER=ashendrabansal@gmail.com
+GMAIL_DEMO_TO=ashendrabansal@gmail.com
+GMAIL_DEMO_APP_PASSWORD=<16-character Google App Password>
+```
+
+Google recommends OAuth when practical. For quick testing with a personal
+Gmail account, enable **2-Step Verification** in the Google Account, create
+an **App Password** at https://myaccount.google.com/apppasswords if that
+setting is offered, and paste it only into local `.env` (never GitHub,
+screenshots or chat). Use the separate 16-character app password, **not**
+the normal account password. An account using Advanced Protection,
+security-key-only two-factor authentication, or a managed organization may
+not allow app passwords. Gmail SMTP uses TLS on `smtp.gmail.com:465`.
+
+No Gmail API, Google Cloud project, or OAuth client is needed for this
+temporary SMTP sandbox. To develop a public multi-user integration, instead
+use Gmail API OAuth2 with the narrow `gmail.send` scope and Google's
+consent/verification process. App passwords are not recommended for a
+production agent.
+
+The `Send demo drafts to my Gmail inbox` button is shown on a ready
+campaign only after the Gmail credentials are configured. It requires
+the logged-in administrator to click it, and saves a per-lead write-ahead
+checkpoint **before** SMTP dispatch. Successful or uncertain SMTP attempts
+are not repeated automatically. The sender and destination must be exactly
+the same Gmail address; if they differ, sending is disabled.
+
+**When the private Gmail sandbox is configured, normal Resend sends (both
+manual and autonomous live outreach) are blocked.** This prevents a demo
+from accidentally contacting real prospects. To resume production Resend
+outreach, remove the `GMAIL_DEMO_*` settings, restart FastAPI, and verify
+the campaign's live policy separately.
+
+
 ## Optional email sending
 
 Configure a domain with [Resend](https://resend.com/docs) and set:
