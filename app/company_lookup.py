@@ -11,7 +11,8 @@ from sqlalchemy.exc import IntegrityError
 
 from . import settings
 from .crustdata import Crustdata, CrustdataError
-from .market_skill import BUYING_COMMITTEES, market_category
+from .market_skill import market_category
+from .buyer_persona import infer_buying_committee
 from .models import SellerLookup
 
 
@@ -30,7 +31,8 @@ def suggest_fields(row: dict) -> dict:
         product = description
         ideal_customer = ""
     category = market_category(Seller(), {"company_data": {"description": description}})
-    committee = BUYING_COMMITTEES[category]
+    inference = infer_buying_committee(description)
+    committee = inference["committee"]
     return {
         "seller_name": name,
         "seller_domain": domain,
@@ -38,11 +40,15 @@ def suggest_fields(row: dict) -> dict:
         "ideal_customer": f"Organizations with a demonstrable need for {description[:190]}" if description else "",
         "buyer_titles": ", ".join(person["role"] for person in committee),
         "market_domain": category,
+        "buyer_problem_domain": inference["problem_domain"],
+        "buyer_role_confidence": inference["confidence"],
+        "buyer_role_evidence": inference["evidence"],
+        "buyer_role_reason": inference["reason"],
         "role_hypotheses": committee,
         "limitations": (["Description missing: edit the product and ideal-customer fields"]
                         if not description else [
-                            "Ideal customers and buyer roles are hypotheses based on company description;"
-                            " verify before launching"
+                            "Initial ideal customers and roles are unverified hypotheses; "
+                            "final market skill will research these again"
                         ]),
     }
 
