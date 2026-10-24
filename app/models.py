@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 
@@ -88,3 +88,56 @@ class StepCheckpoint(Base):
     last_error: Mapped[str] = mapped_column(String(100), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     __table_args__ = (UniqueConstraint("campaign_id", "step_key", name="uq_checkpoint_campaign_step"),)
+
+
+class OutreachPolicy(Base):
+    """Campaign authorization: auto_send is a preference, live requires opt-in."""
+    __tablename__ = "outreach_policies"
+    campaign_id: Mapped[str] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="CASCADE"), primary_key=True)
+    auto_send: Mapped[bool] = mapped_column(Boolean, default=True)
+    min_score: Mapped[int] = mapped_column(Integer, default=85)
+    daily_limit: Mapped[int] = mapped_column(Integer, default=10)
+    prepare_linkedin_drafts: Mapped[bool] = mapped_column(Boolean, default=False)
+    mode: Mapped[str] = mapped_column(String(24), default="simulation")
+    legal_basis: Mapped[str] = mapped_column(String(45), default="")
+    organization_type: Mapped[str] = mapped_column(String(45), default="")
+    sender_postal_address: Mapped[str] = mapped_column(Text, default="")
+    reply_to: Mapped[str] = mapped_column(String(254), default="")
+    authorized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Suppression(Base):
+    __tablename__ = "outreach_suppressions"
+    email: Mapped[str] = mapped_column(String(254), primary_key=True)
+    reason: Mapped[str] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class OutreachAttempt(Base):
+    __tablename__ = "outreach_attempts"
+    lead_id: Mapped[str] = mapped_column(
+        ForeignKey("leads.id", ondelete="CASCADE"), primary_key=True)
+    campaign_id: Mapped[str] = mapped_column(String(36), index=True)
+    email: Mapped[str] = mapped_column(String(254), index=True)
+    day_utc: Mapped[str] = mapped_column(String(10), index=True)
+    state: Mapped[str] = mapped_column(String(24), default="reserved")
+    provider_id: Mapped[str] = mapped_column(String(150), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ProcessedResendEvent(Base):
+    __tablename__ = "processed_resend_events"
+    event_id: Mapped[str] = mapped_column(String(150), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(80))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class InboundReply(Base):
+    __tablename__ = "inbound_replies"
+    message_id: Mapped[str] = mapped_column(String(150), primary_key=True)
+    lead_id: Mapped[str] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
+    sender: Mapped[str] = mapped_column(String(254))
+    classification: Mapped[str] = mapped_column(String(45))
+    excerpt: Mapped[str] = mapped_column(Text, default="")
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
