@@ -231,3 +231,39 @@ def test_scheduler_requires_secret_and_ignores_simulation(client, monkeypatch):
     assert good.json() == {"status": "scheduled", "campaigns": 0}
     with SessionLocal() as db:
         assert db.get(OutreachPolicy, campaign_id) is None
+
+
+def test_inbound_opt_out_suppresses_and_unsubscribe_requires_post(client, monkeypatch):
+    campaign_id = campaign_with_leads()
+    configure_live(campaign_id, monkeypatch)
+    with SessionLocal() as db:
+        lead = db.scalar(select(Lead))
+        lead.status = "sent"
+        lead_id = lead.id
+        db.add(OutreachAttempt(
+            lead_id=lead.id, campaign_id=campaign_id,
+            email=lead.email, day_utc="2026-10-24", day_slot=1,
+            state="sent", provider_id="test-sent-provider",
+        ))
+        db.commit()
+    from app.outreach import unsubscribe_signature
+    token = unsubscribe_signature(lead_id)
+    assert client.get(f"/unsubscribe/{lead_id}/{token}").status_code == 200
+    with SessionLocal() as db:
+        assert db.get(Suppression, "contact@club0.example") is None
+    monkeypatch.setattr("app.resend_events.get_inbound_email", lambda _: {
+        "from": "Example Person <contact@club0.example>",
+        "text": "Please unsubscribe and stop emailing me."
+    })
+    raw = json.dumps({"type": "email.received", "data": {
+        "email_id": "received-optout-001", "from": "contact@club0.example"
+    }}).encode()
+    secret = base64.b64decode(settings.RESEND_WEBHOOK_SECRET[6:])
+    response = client.post("/webhooks/resend", content=raw,
+                           headers=_sign(raw, secret, "incoming-optout-001"))
+    assert response.status_code == 200
+    with SessionLocal() as db:
+        assert db.get(Suppression, "contact@club0.example").reason == "reply_opt_out"
+        assert db.get(InboundReply, "received-optout-001").classification == "opt_out"
+        assert db.get(Lead, lead_id).status == "unsubscribed"
+    assert client.post(f"/unsubscribe/{lead_id}/{token}").status_code == 200
