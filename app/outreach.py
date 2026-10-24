@@ -129,6 +129,8 @@ def outreach_footer(lead: Lead, policy: OutreachPolicy) -> str:
 def ready_for_live(policy: OutreachPolicy) -> str:
     if not settings.RESEND_API_KEY or not settings.FROM_EMAIL:
         return "missing_resend_configuration"
+    if not settings.CRUSTDATA_API_KEY:
+        return "missing_crustdata_configuration"
     if not settings.RESEND_WEBHOOK_SECRET:
         return "resend_webhook_secret_required"
     if not settings.CSRF_SECRET or len(settings.CSRF_SECRET) < 16:
@@ -212,6 +214,14 @@ def run_outreach(campaign_id: str) -> dict:
             Lead.campaign_id == campaign_id).order_by(Lead.fit_score.desc())).all()
         day = datetime.now(timezone.utc).date().isoformat()
         for lead in leads:
+            # Check the global quota BEFORE potentially paying for an email
+            # enrichment that cannot be used today.
+            active_slots = set(db.scalars(select(OutreachAttempt.day_slot).where(
+                OutreachAttempt.day_utc == day)).all())
+            if len(active_slots) >= min(10, policy.daily_limit):
+                result["held"] += 1
+                result["reasons"].append("daily_cap_reached")
+                break
             reason = policy_decision(db, campaign, lead, policy, require_email=False)
             if reason not in ("eligible", "needs_enrichment"):
                 result["held"] += 1
