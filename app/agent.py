@@ -12,7 +12,7 @@ from .checkpoints import checkpointed, fingerprint, CheckpointNeedsReview, get_c
 from .discovery_trace import search_trace
 from .scoring import score_company
 from .seller_research import make_research_plan
-from .market_skill import get_market_playbook
+from .market_skill import get_market_playbook, prioritize_contacts, contact_role_match
 from .market_scoring import score_market_fit
 from .outreach import choose_verified_email
 
@@ -149,13 +149,15 @@ def run_campaign(campaign_id: str):
                      "data_hash": fingerprint(research)},
                     lambda: research,
                 )
-                plan = {"query": strategy["query"], "titles": strategy["titles"]}
+                inferred_titles = [entry["role"] for entry in research_data["market_skill"]["buying_committee"]]
+                plan = {"query": strategy["query"], "titles": inferred_titles[:4]}
                 if not research_was_cached:
                     audit(db, c.id, "seller_research_completed", details={
                         "domain": c.seller_domain,
                         "web_sources": len(research.get("sources") or []),
                         "limitations": research.get("limitations") or [],
                         "generated_query": plan["query"],
+                        "inferred_contacts": research_data["market_skill"]["buying_committee"],
                     })
                     db.commit()
             else:
@@ -173,7 +175,7 @@ def run_campaign(campaign_id: str):
             api = None if settings.DEMO_MODE else Crustdata()
             company_request = RequestBuilder.company_search_request(
                 plan["query"], c.country, settings.MAX_COMPANIES,
-                c.min_headcount, c.max_headcount)
+                c.min_revenue_usd, c.max_revenue_usd)
             company_was_cached = bool(
                 (get_checkpoint(db, c.id, "company_search") or None)
                 and get_checkpoint(db, c.id, "company_search").status == "complete")
@@ -181,7 +183,7 @@ def run_campaign(campaign_id: str):
                 db, c.id, "company_search",
                 {"revision": "company-search-v1", "demo": settings.DEMO_MODE,
                  "query": plan["query"], "country": c.country,
-                 "min_headcount": c.min_headcount, "max_headcount": c.max_headcount,
+                 "min_revenue_usd": c.min_revenue_usd, "max_revenue_usd": c.max_revenue_usd,
                  "limit": settings.MAX_COMPANIES},
                 lambda: (DEMO_COMPANIES[:settings.MAX_COMPANIES]
                          if settings.DEMO_MODE else api.company_search(
@@ -257,14 +259,14 @@ def run_campaign(campaign_id: str):
                     old = get_checkpoint(db, c.id, people_key)
                     people_was_cached = bool(old and old.status == "complete")
                     people_request = RequestBuilder.people_search_request(
-                        domain, plan["titles"], limit=2)
+                        domain, plan["titles"], limit=4)
                     people = checkpointed(
                         db, c.id, people_key,
                         {"revision": "people-search-v1", "demo": settings.DEMO_MODE,
-                         "domain": domain, "titles": plan["titles"], "limit": 2},
+                         "domain": domain, "titles": plan["titles"], "limit": 4},
                         lambda: ([DEMO_PEOPLE[i % len(DEMO_PEOPLE)]]
                                  if settings.DEMO_MODE else
-                                 api.people_search(domain, plan["titles"], limit=2)),
+                                 api.people_search(domain, plan["titles"], limit=4)),
                     )
                     audit(db, c.id, "crustdata_people_query", details={
                         **search_trace("/person/search", people_request, people,
@@ -273,6 +275,8 @@ def run_campaign(campaign_id: str):
                     })
                     db.commit()
 
+                if skill and people:
+                    people = prioritize_contacts(people, skill)
                 candidate_score = (score_market_fit(c, company, people[0] if people else None, skill)
                                    if skill else score_company(c, company, people[0] if people else None))
                 person = None
@@ -350,11 +354,20 @@ def run_campaign(campaign_id: str):
                 lead.person_profile = str(social.get("profile_url") or "")[:1500]
                 lead.fit_score = candidate_score["total"]
                 lead.fit_reason = candidate_score["summary"]
+                selected_role = contact_role_match(person, skill) if skill else {}
+                audit(db, c.id, "contact_role_selected", details={
+                    "company": company_name, "current_title": title,
+                    "inferred_role": selected_role.get("target_role", ""),
+                    "committee_function": selected_role.get("function", ""),
+                    "reason": selected_role.get("reason", "Legacy manual role selection"),
+                    "source": "market_playbook" if skill else "legacy",
+                })
                 lead.evidence = {
                     **(lead.evidence or {}),
                     "company_record": company, "person_record": person or {},
                     "provider": "DEMO" if settings.DEMO_MODE else "Crustdata",
                     "scorecard": candidate_score,
+                    "contact_role": selected_role,
                     "email_verification": ("fictional_demo" if settings.DEMO_MODE
                                            else "crustdata_deliverable"),
                 }
