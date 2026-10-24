@@ -107,6 +107,28 @@ def index(request: Request, db: Session = Depends(get_db), _: str = Depends(auth
     return page(request, "index.html", campaigns=campaigns)
 
 
+@app.post("/buyer-roles/suggest")
+def suggest_buyer_roles(
+    product: str = Form(..., min_length=3, max_length=2000),
+    ideal_customer: str = Form(default="", max_length=2000),
+    csrf: str = Form(...),
+    _: str = Depends(authorize),
+):
+    """Zero-credit local suggestion after the user edits the business problem."""
+    check_csrf(csrf)
+    from .buyer_persona import infer_buying_committee
+    result = infer_buying_committee(product, ideal_customer)
+    return {
+        "titles": ", ".join(x["role"] for x in result["committee"]),
+        "roles": result["committee"],
+        "problem_domain": result["problem_domain"],
+        "confidence": result["confidence"],
+        "evidence": result["evidence"],
+        "reason": result["reason"],
+        "provider_calls": 0,
+    }
+
+
 @app.post("/company-lookup")
 def company_prefill_lookup(
     company_name: str = Form(min_length=3, max_length=160),
