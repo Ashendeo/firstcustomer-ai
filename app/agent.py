@@ -165,7 +165,7 @@ def run_campaign(campaign_id: str):
                      "max": c.max_headcount},
                     lambda: make_plan(c),
                 )
-                c.search_query = plan["query"]
+            c.search_query = plan["query"]
             db.commit()
             api = None if settings.DEMO_MODE else Crustdata()
             company_request = RequestBuilder.company_search_request(
