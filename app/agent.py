@@ -5,10 +5,12 @@ import hashlib
 from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
 from sqlalchemy import select
 from . import settings
-from .crustdata import Crustdata
+from .crustdata import Crustdata, Crustdata as RequestBuilder
 from .db import SessionLocal
 from .models import Campaign, Lead, AuditEvent
-from .checkpoints import checkpointed, fingerprint, CheckpointNeedsReview
+from .checkpoints import checkpointed, fingerprint, CheckpointNeedsReview, get_checkpoint
+from .discovery_trace import search_trace
+from .scoring import score_company
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +117,12 @@ def run_campaign(campaign_id: str):
             c.search_query = plan["query"]
             db.commit()
             api = None if settings.DEMO_MODE else Crustdata()
+            company_request = RequestBuilder.company_search_request(
+                plan["query"], c.country, settings.MAX_COMPANIES,
+                c.min_headcount, c.max_headcount)
+            company_was_cached = bool(
+                (get_checkpoint(db, c.id, "company_search") or None)
+                and get_checkpoint(db, c.id, "company_search").status == "complete")
             companies = checkpointed(
                 db, c.id, "company_search",
                 {"revision": "company-search-v1", "demo": settings.DEMO_MODE,
@@ -126,9 +134,9 @@ def run_campaign(campaign_id: str):
                              plan["query"], c.country, settings.MAX_COMPANIES,
                              c.min_headcount, c.max_headcount)),
             )
-            audit(db, c.id, "company_search_available", details={
-                "result_count": len(companies), "demo": settings.DEMO_MODE,
-            })
+            audit(db, c.id, "crustdata_company_query", details=search_trace(
+                "/company/search", company_request, companies,
+                company_was_cached, demo=settings.DEMO_MODE))
             db.commit()
             seen = set()
             for i, company in enumerate(companies):
@@ -162,8 +170,13 @@ def run_campaign(campaign_id: str):
                 people = []
                 if i < settings.MAX_PEOPLE_SEARCHES:
                     if settings.DEMO_MODE or domain:
+                        people_key = f"people:{discovery_key[:32]}"
+                        old_checkpoint = get_checkpoint(db, c.id, people_key)
+                        people_was_cached = bool(old_checkpoint and old_checkpoint.status == "complete")
+                        people_request = RequestBuilder.people_search_request(
+                            domain, plan["titles"], limit=2)
                         people = checkpointed(
-                            db, c.id, f"people:{discovery_key[:32]}",
+                            db, c.id, people_key,
                             {"revision": "people-search-v1",
                              "demo": settings.DEMO_MODE, "domain": domain,
                              "titles": plan["titles"], "limit": 2},
@@ -171,6 +184,12 @@ def run_campaign(campaign_id: str):
                                      if settings.DEMO_MODE else
                                      api.people_search(domain, plan["titles"], limit=2)),
                         )
+                        audit(db, c.id, "crustdata_people_query", details={
+                            **search_trace("/person/search", people_request, people,
+                                           people_was_cached, demo=settings.DEMO_MODE),
+                            "company": company_name, "domain": domain,
+                        })
+                        db.commit()
                 person = people[0] if people else None
                 profile = (person or {}).get("basic_profile") or {}
                 roles = (((person or {}).get("experience") or {})
@@ -208,12 +227,26 @@ def run_campaign(campaign_id: str):
                      "person": person, "booking_link": link},
                     lambda: evaluate(c, company, person, link),
                 )
-                lead.fit_score = analysis["fit_score"]
-                lead.fit_reason = analysis["fit_reason"]
+                scorecard = score_company(c, company, person)
+                lead.fit_score = scorecard["total"]
+                # The Qwen-provided number remains a model opinion, not the
+                # explained numerical score. The visible score is the rubric sum.
+                lead.fit_reason = scorecard["summary"]
+                lead.evidence = {
+                    **(lead.evidence or {}),
+                    "scorecard": scorecard,
+                    "model_assessment": {
+                        "model_score": analysis.get("fit_score"),
+                        "model_reason": analysis.get("fit_reason", ""),
+                    },
+                }
                 lead.draft_subject = analysis["subject"]
                 lead.draft_body = analysis["body"]
                 audit(db, c.id, "lead_drafted", lead.id, {
                     "score": lead.fit_score, "source": lead.source,
+                    "rubric": "scorecard-v1",
+                    "criterion_points": {item["key"]: item["earned"]
+                                         for item in scorecard["criteria"]},
                 })
                 db.commit()
 
