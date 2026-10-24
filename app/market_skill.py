@@ -11,6 +11,7 @@ from . import settings
 from .models import MarketPlaybook
 from .checkpoints import checkpointed, fingerprint
 from .seller_research import research_seller, web_search
+from .buyer_persona import infer_buying_committee
 
 log = logging.getLogger(__name__)
 KEYS = ("industry", "scale", "need", "timing", "buyer", "coverage")
@@ -67,9 +68,9 @@ BUYING_COMMITTEES = {
 VALID_FUNCTIONS = {"economic_buyer", "problem_owner", "functional_champion", "technical_evaluator"}
 
 
-def validated_buying_committee(category: str, value) -> list[dict]:
+def validated_buying_committee(category: str, value, fallback=None) -> list[dict]:
     """Validate the model-proposed decision-maker roles; deterministic fallback."""
-    defaults = BUYING_COMMITTEES[category]
+    defaults = fallback if fallback is not None else BUYING_COMMITTEES[category]
     if not isinstance(value, list):
         return [dict(item) for item in defaults]
     accepted = []
@@ -155,9 +156,18 @@ def validated_skill(campaign, research: dict, raw: dict | None = None) -> dict:
         clean = [x.strip().lower()[:55] for x in value
                  if isinstance(x, str) and len(x.strip()) >= 3]
         return list(dict.fromkeys(clean))[:12] or fallback_terms[:12]
-    committee = validated_buying_committee(category, raw.get("buying_committee"))
+    inferred = infer_buying_committee(
+        campaign.product,
+        " ".join([campaign.ideal_customer,
+                  str(research.get("summary") or ""),
+                  str((research.get("company_data") or {}).get("description") or "")]),
+    )
+    committee = validated_buying_committee(
+        category, raw.get("buying_committee"),
+        inferred["committee"] if inferred["committee"] else [],
+    )
     return {
-        "version": "market-skill-v1",
+        "version": "market-skill-v2",
         "market_domain": category,
         "weights": weights,
         "industry_terms": terms("industry_terms", KEYWORDS[category]),
@@ -167,6 +177,14 @@ def validated_skill(campaign, research: dict, raw: dict | None = None) -> dict:
         "news_terms": terms("news_terms", KEYWORDS[category]),
         "buyer_titles": [item["role"] for item in committee],
         "buying_committee": committee,
+        "buyer_problem_domain": inferred["problem_domain"],
+        "buyer_role_confidence": (
+            "model_inferred" if isinstance(raw.get("buying_committee"), list)
+            and len(committee) >= 2 and committee != inferred["committee"]
+            else inferred["confidence"]
+        ),
+        "buyer_role_evidence": inferred["evidence"],
+        "buyer_role_reason": inferred["reason"],
         "source_urls": [x["url"] for x in (research.get("market_sources") or [])
                         if isinstance(x, dict) and x.get("url")][:8],
         "method": ("Industry-specific heuristic rubric with validated "
@@ -175,7 +193,11 @@ def validated_skill(campaign, research: dict, raw: dict | None = None) -> dict:
 
 
 def _product_hash(campaign) -> str:
-    return fingerprint({"product": campaign.product.strip().lower()})
+    return fingerprint({
+        "version": "market-skill-v2",
+        "product": campaign.product.strip().lower(),
+        "customer_problem": campaign.ideal_customer.strip().lower(),
+    })
 
 
 def get_market_playbook(db, campaign, audit_fn, model_fn) -> tuple[dict, bool]:
@@ -237,7 +259,11 @@ def get_market_playbook(db, campaign, audit_fn, model_fn) -> tuple[dict, bool]:
                     "need determine FIT; hiring/funding/news/growth are only timing PROXIES, "
                     "not proof of purchase intent. Do not invent facts. Domain-specific "
                     "criteria should follow the cited external evidence where available.",
-                    {"product": campaign.product, "seller": campaign.seller_domain,
+                    {"product": campaign.product,
+                     "customer_problem": campaign.ideal_customer,
+                     "buyer_role_baseline": infer_buying_committee(
+                         campaign.product, campaign.ideal_customer),
+                     "seller": campaign.seller_domain,
                      "research": {"summary": research.get("summary"),
                                   "web_sources": research.get("web_results", [])[:4],
                                   "market_sources": market_sources[:6],
