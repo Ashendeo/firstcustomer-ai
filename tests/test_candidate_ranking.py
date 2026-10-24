@@ -144,3 +144,81 @@ def test_company_name_lookup_is_cached_and_user_editable(client, token, monkeypa
     assert second.json()["from_cache"] is True
     assert len(count) == 1
     assert "Buyer titles" not in client.get("/").text or "Buyer titles" in client.get("/").text
+
+
+def test_sparse_results_are_ranked_not_silently_filtered(client, token, monkeypatch):
+    cid = _campaign(client, token)
+    monkeypatch.setattr(settings, "DEMO_MODE", False)
+    monkeypatch.setattr(settings, "QWEN_PLAN_WITH_MODEL", False)
+    monkeypatch.setattr(settings, "CRUSTDATA_API_KEY", "test")
+    monkeypatch.setattr(settings, "MAX_PROSPECT_ENRICHMENTS", 0)
+    monkeypatch.setattr(settings, "MAX_PEOPLE_SEARCHES", 0)
+    class SparseSearch:
+        def company_search(self, *args):
+            return [
+                {"crustdata_company_id": "101", "basic_info": {"name": "Company Without Website"}},
+                {"crustdata_company_id": "102", "basic_info": {
+                    "name": "Contactable Company", "primary_domain": "contactable.example"}},
+                {"crustdata_company_id": "103", "basic_info": {
+                    "name": "Duplicate Result", "primary_domain": "contactable.example"}},
+            ]
+    monkeypatch.setattr(agent, "Crustdata", SparseSearch)
+    with SessionLocal() as db:
+        db.get(Campaign, cid).status = "running"
+        db.commit()
+    agent.run_campaign(cid)
+    with SessionLocal() as db:
+        assert db.get(Campaign, cid).status == "ready"
+        assert db.scalars(select(Lead).where(Lead.campaign_id == cid)).all() == []
+        events = db.scalars(select(AuditEvent).where(
+            AuditEvent.campaign_id == cid,
+            AuditEvent.action.in_(("candidate_search_prioritization",
+                                   "candidate_enriched_ranking",
+                                   "candidate_final_ranking", "candidate_funnel_summary")),
+        )).all()
+        by_action = {event.action: event.details for event in events}
+        assert len(by_action["candidate_search_prioritization"]["candidates"]) == 3
+        assert len(by_action["candidate_enriched_ranking"]["candidates"]) == 3
+        assert len(by_action["candidate_final_ranking"]["candidates"]) == 3
+        assert by_action["candidate_funnel_summary"]["company_search_results"] == 3
+        assert by_action["candidate_funnel_summary"]["stage2_ranked"] == 3
+        assert by_action["candidate_funnel_summary"]["new_leads"] == 0
+        statuses = {item["status"] for item in by_action["candidate_final_ranking"]["candidates"]}
+        assert statuses == {
+            "missing_company_domain", "duplicate_company_result",
+            "skipped_no_verified_business_email",
+        }
+        reasons = [item.get("reason") for item in by_action["candidate_final_ranking"]["candidates"]]
+        assert "people_search_budget_exhausted" in reasons
+    page = client.get(f"/campaigns/{cid}")
+    assert page.status_code == 200
+    assert "Companies discovered" in page.text
+    assert "Companies ranked" in page.text
+    assert "Verified-contact leads" in page.text
+    assert "Companies were discovered, but none became new Leads" in page.text
+    assert "missing company domain" in page.text
+
+
+def test_zero_from_crustdata_is_not_reported_as_ranking_filter(client, token, monkeypatch):
+    cid = _campaign(client, token)
+    monkeypatch.setattr(settings, "DEMO_MODE", False)
+    monkeypatch.setattr(settings, "QWEN_PLAN_WITH_MODEL", False)
+    monkeypatch.setattr(settings, "CRUSTDATA_API_KEY", "test")
+    class EmptySearch:
+        def company_search(self, *args):
+            return []
+    monkeypatch.setattr(agent, "Crustdata", EmptySearch)
+    with SessionLocal() as db:
+        db.get(Campaign, cid).status = "running"
+        db.commit()
+    agent.run_campaign(cid)
+    with SessionLocal() as db:
+        assert db.get(Campaign, cid).status == "ready"
+        summary = db.scalar(select(AuditEvent).where(
+            AuditEvent.campaign_id == cid,
+            AuditEvent.action == "candidate_funnel_summary"))
+        assert summary.details["search_empty"] is True
+        assert summary.details["stage1_ranked"] == 0
+        assert summary.details["stage2_ranked"] == 0
+    page = client.get(f"/campaigns/{cid}")
+    assert "Crustdata Company Search returned zero candidates" in page.text
