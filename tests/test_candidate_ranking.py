@@ -1,0 +1,146 @@
+"""Two-stage candidate ranking and cache-safe contact prioritization tests."""
+from sqlalchemy import select
+
+from app import agent, settings, company_lookup
+from app.candidate_ranking import prioritize_companies
+from app.db import SessionLocal
+from app.models import Campaign, Lead, AuditEvent
+
+
+def _campaign(client, token):
+    response = client.post("/campaigns", data={
+        "csrf": token, "name": "Two-stage target ranking",
+        "product": "Cloud software for sports events companies",
+        "ideal_customer": "Organizations operating corporate sports leagues",
+        "country": "India", "buyer_titles": "",
+    }, follow_redirects=False)
+    assert response.status_code == 303, response.text
+    return response.headers["location"].rsplit("/", 1)[-1]
+
+
+def test_provider_rank_combines_with_observed_evidence():
+    campaign = Campaign(
+        ideal_customer="Cloud security compliance",
+        buyer_titles="CTO",
+    )
+    companies = [
+        {"basic_info": {"name": "Search first", "primary_domain": "first.example"}},
+        {"basic_info": {"name": "Search second", "primary_domain": "second.example"}},
+        {"basic_info": {"name": "Search third", "primary_domain": "third.example",
+                         "description": "Cloud security compliance"}},
+        {"basic_info": {"name": "Search fourth", "primary_domain": "fourth.example"}},
+        {"basic_info": {"name": "Search fifth", "primary_domain": "fifth.example"}},
+    ]
+    ranked = prioritize_companies(campaign, companies, None)
+    assert ranked[0]["company"]["basic_info"]["name"] == "Search third"
+    assert ranked[0]["provider_rank"] == 3
+    assert ranked[0]["pre_enrichment_evidence_score"] is not None
+    assert ranked[-1]["provider_rank"] == 5
+    assert all(0 <= r["discovery_priority"] <= 100 for r in ranked)
+
+
+def test_enrichment_reorders_contact_budget_and_persists_final_ranking(
+        client, token, monkeypatch):
+    cid = _campaign(client, token)
+    monkeypatch.setattr(settings, "DEMO_MODE", False)
+    monkeypatch.setattr(settings, "QWEN_PLAN_WITH_MODEL", False)
+    monkeypatch.setattr(settings, "CRUSTDATA_API_KEY", "fake")
+    monkeypatch.setattr(settings, "MAX_COMPANIES", 3)
+    monkeypatch.setattr(settings, "MAX_PROSPECT_ENRICHMENTS", 3)
+    monkeypatch.setattr(settings, "MAX_PEOPLE_SEARCHES", 3)
+    monkeypatch.setattr(settings, "MAX_CONTACT_ENRICHMENTS", 3)
+    queries = {"company": 0, "enrich": 0, "people": [], "email": 0, "llm": 0}
+
+    class Provider:
+        def company_search(self, query, country, limit, min_revenue_usd=0, max_revenue_usd=0):
+            queries["company"] += 1
+            return [{"basic_info": {"name": f"Candidate {i}",
+                     "primary_domain": f"company{i}.example"}}
+                    for i in range(3)]
+
+        def company_enrich_advanced(self, domain):
+            queries["enrich"] += 1
+            description = ("Organizations operating corporate sports leagues"
+                           if domain == "company2.example" else "Unrelated local retailer")
+            return {"basic_info": {"primary_domain": domain,
+                    "description": description}, "revenue": {
+                    "estimated": {"lower_bound_usd": 1000000,
+                                  "upper_bound_usd": 5000000}}}
+
+        def people_search(self, domain, titles, limit=4):
+            queries["people"].append(domain)
+            return [{"basic_profile": {"name": "Buyer"},
+                     "experience": {"employment_details": {"current": [{"title": "CTO"}]}},
+                     "social_handles": {"professional_network_identifier": {
+                         "profile_url": "https://www.linkedin.com/in/" + domain.split(".")[0]}}}]
+
+        def business_email_enrich(self, url):
+            queries["email"] += 1
+            domain = url.rsplit("/", 1)[-1] + ".example"
+            if domain == "company1.example":
+                return []
+            return [{"status": "deliverable", "email": "buyer@" + domain}]
+
+    def llm(*args):
+        queries["llm"] += 1
+        return {"fit_score": 70, "fit_reason": "Evidence present",
+                "subject": "Potential sports pilot", "body": "Hello, could we discuss a pilot?"}
+
+    monkeypatch.setattr(agent, "Crustdata", Provider)
+    monkeypatch.setattr(agent, "llm_json", llm)
+    with SessionLocal() as db:
+        db.get(Campaign, cid).status = "running"
+        db.commit()
+    agent.run_campaign(cid)
+    with SessionLocal() as db:
+        camp = db.get(Campaign, cid)
+        assert camp.status == "ready", camp.error
+        enriched = db.scalar(select(AuditEvent).where(
+            AuditEvent.campaign_id == cid,
+            AuditEvent.action == "candidate_enriched_ranking",
+        ))
+        final = db.scalar(select(AuditEvent).where(
+            AuditEvent.campaign_id == cid,
+            AuditEvent.action == "candidate_final_ranking",
+        ))
+        assert enriched.details["candidates"][0]["domain"] == "company2.example"
+        assert len(final.details["candidates"]) == 3
+        assert {r["status"] for r in final.details["candidates"]} == {
+            "lead_created", "skipped_no_verified_business_email"}
+        leads = db.scalars(select(Lead).where(Lead.campaign_id == cid)).all()
+        assert len(leads) == 2
+        assert all(l.email.endswith(l.domain) for l in leads)
+    assert queries["people"][0] == "company2.example"  # advanced evidence changes order
+    before = dict(queries)
+    before["people"] = list(queries["people"])
+    with SessionLocal() as db:
+        db.get(Campaign, cid).status = "running"
+        db.commit()
+    agent.run_campaign(cid)
+    assert queries == before  # completed checks must not repeat metered calls
+    page = client.get(f"/campaigns/{cid}")
+    assert page.status_code == 200
+    assert "Stage 1" in page.text
+    assert "Stage 2" in page.text
+    assert "skipped no verified business email" in page.text
+
+
+def test_company_name_lookup_is_cached_and_user_editable(client, token, monkeypatch):
+    monkeypatch.setattr(settings, "DEMO_MODE", False)
+    monkeypatch.setattr(settings, "CRUSTDATA_API_KEY", "fake")
+    count = []
+    class LookupProvider:
+        def company_search(self, query, country, limit):
+            count.append(query)
+            return [{"basic_info": {"name": "Example Sports",
+                     "primary_domain": "example-sports.com",
+                     "description": "Football competition management tools"}}]
+    monkeypatch.setattr(company_lookup, "Crustdata", LookupProvider)
+    args = {"company_name": "Example Sports", "csrf": token}
+    first = client.post("/company-lookup", data=args)
+    second = client.post("/company-lookup", data=args)
+    assert first.status_code == 200
+    assert first.json()["candidates"][0]["seller_domain"] == "example-sports.com"
+    assert second.json()["from_cache"] is True
+    assert len(count) == 1
+    assert "Buyer titles" not in client.get("/").text or "Buyer titles" in client.get("/").text
