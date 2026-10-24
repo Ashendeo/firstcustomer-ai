@@ -140,7 +140,7 @@ def test_live_orchestrator_with_mocked_providers(client, token, monkeypatch):
     class FakeCrustdata:
         def company_search(self, query, country, limit, min_headcount=0, max_headcount=0):
             assert country == "India"
-            assert (min_headcount, max_headcount) == (500, 5000)
+            assert (min_headcount, max_headcount) == (0, 0)
             return [{"crustdata_company_id": 9, "basic_info": {
                 "name": "Sample Business", "primary_domain": "sample.example", "description": "Organizes employee sports events"
             }}]
@@ -148,13 +148,18 @@ def test_live_orchestrator_with_mocked_providers(client, token, monkeypatch):
             assert domain == "sample.example"
             return [{"crustdata_person_id": 22, "basic_profile": {"name": "Example Person"},
                      "experience": {"employment_details": {"current": [{"title": "Head of HR"}]}},
-                     "social_handles": {"professional_network_identifier": {"profile_url": "https://example.org/profile"}}}]
+                     "social_handles": {"professional_network_identifier": {"profile_url": "https://www.linkedin.com/in/example-person"}}}]
+    def fake_contact(_profile_url):
+        return [{"email": "buyer@sample.example", "status": "deliverable"}]
+    FakeCrustdata.business_email_enrich = lambda self, url: fake_contact(url)
     def fake_llm(instructions, payload):
         if "You plan" in instructions:
             return {"query": "mid-sized employee events tech businesses", "titles": ["Head of HR"]}
         return {"fit_score": 78, "fit_reason": "Company explicitly states it organizes employee sports events.",
                 "subject": "Sports analytics pilot", "body": "Hello, would a pilot of our product be relevant to your team?"}
     monkeypatch.setattr(settings, "DEMO_MODE", False)
+    monkeypatch.setattr(settings, "MAX_PROSPECT_ENRICHMENTS", 0)
+    monkeypatch.setattr(settings, "MAX_CONTACT_ENRICHMENTS", 4)
     monkeypatch.setattr(agent, "Crustdata", FakeCrustdata)
     monkeypatch.setattr(agent, "llm_json", fake_llm)
     with SessionLocal() as db:
