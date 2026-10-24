@@ -9,6 +9,7 @@ def env_bool(name: str, default: str = "false") -> bool:
 
 DEMO_MODE = env_bool("DEMO_MODE", "true")
 CRUSTDATA_API_KEY = os.getenv("CRUSTDATA_API_KEY", "")
+BRAVE_SEARCH_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY", "")
 QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3:4b")
 QWEN_MODEL_SERVER = os.getenv("QWEN_MODEL_SERVER", "http://localhost:11434/v1")
 QWEN_TIMEOUT_SECONDS = max(15, min(int(os.getenv("QWEN_TIMEOUT_SECONDS", "120")), 600))
