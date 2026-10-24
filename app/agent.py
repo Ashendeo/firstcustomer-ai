@@ -211,6 +211,37 @@ def run_campaign(campaign_id: str):
             # domain-specific evidence score BEFORE spending on people/contact.
             # The preliminary Crustdata relevance order remains an explicit
             # tie-breaker and is stored in the report.
+            # Prefetch the expensive company-enrichment requests concurrently.
+            # Unique database claims are persisted before worker threads start;
+            # the session is never shared with a provider worker.
+            enrich_jobs = []
+            enrich_was_cached = {}
+            planned_domains = set()
+            enrich_fields = RequestBuilder.advanced_enrich_fields()
+            for candidate in prioritized:
+                item = candidate["company"]
+                basic = item.get("basic_info") or {}
+                company_id = str(item.get("crustdata_company_id") or "")
+                company_name = str(basic.get("name") or item.get("name") or "").strip()
+                domain = str(basic.get("primary_domain") or "").lower().removeprefix("www.")[:180]
+                if (settings.DEMO_MODE or not company_name and not company_id
+                        or not domain or domain == c.seller_domain.lower()
+                        or domain in planned_domains
+                        or len(planned_domains) >= settings.MAX_PROSPECT_ENRICHMENTS):
+                    continue
+                planned_domains.add(domain)
+                key = "prospect_enrich_advanced:" + fingerprint({"identity": domain})[:32]
+                previous = get_checkpoint(db, c.id, key)
+                enrich_was_cached[key] = bool(previous and previous.status == "complete")
+                enrich_jobs.append((
+                    key,
+                    {"revision": "prospect-advanced-v1", "domain": domain,
+                     "fields": enrich_fields},
+                    lambda domain=domain: api.company_enrich_advanced(domain),
+                ))
+            enrich_results = checkpointed_parallel(
+                db, c.id, enrich_jobs, max_workers=settings.API_CONCURRENCY,
+            )
             enriched_candidates = []
             seen_domains = set()
             enrichment_attempts = 0
@@ -235,25 +266,22 @@ def run_campaign(campaign_id: str):
                 if not drop_reason:
                     seen_domains.add(identity)
                 discovery_key = fingerprint({"identity": identity})
-                if (not drop_reason and not settings.DEMO_MODE and domain
-                        and enrichment_attempts < settings.MAX_PROSPECT_ENRICHMENTS):
+                enrich_key = "prospect_enrich_advanced:" + fingerprint(
+                    {"identity": domain})[:32]
+                if not drop_reason and enrich_key in enrich_results:
                     enrichment_attempts += 1
-                    key = "prospect_enrich_advanced:" + discovery_key[:32]
-                    previous = get_checkpoint(db, c.id, key)
-                    was_cached = bool(previous and previous.status == "complete")
-                    fields = RequestBuilder.advanced_enrich_fields()
-                    enriched = checkpointed(
-                        db, c.id, key,
-                        {"revision": "prospect-advanced-v1", "domain": domain,
-                         "fields": fields},
-                        lambda domain=domain: api.company_enrich_advanced(domain),
-                    )
+                    enriched = enrich_results[enrich_key]
+                    was_cached = enrich_was_cached[enrich_key]
                     if enriched:
-                        company = {**company, **enriched,
-                                   "basic_info": {**info, **(enriched.get("basic_info") or {})}}
+                        company = {
+                            **company, **enriched,
+                            "basic_info": {
+                                **info, **(enriched.get("basic_info") or {}),
+                            },
+                        }
                     audit(db, c.id, "crustdata_prospect_enrichment", details={
                         "domain": domain, "from_checkpoint": was_cached,
-                        "requested_fields": fields,
+                        "requested_fields": enrich_fields,
                         "returned_sections": sorted(enriched.keys()),
                         "match_found": bool(enriched),
                         "provider_calls_this_run": 0 if was_cached else 1,
