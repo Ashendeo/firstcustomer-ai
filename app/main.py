@@ -108,6 +108,7 @@ def index(request: Request, db: Session = Depends(get_db), _: str = Depends(auth
 
 @app.post("/campaigns")
 def create_campaign(
+    tasks: BackgroundTasks,
     name: str = Form(min_length=3, max_length=140),
     product: str = Form(min_length=10, max_length=2000),
     seller_name: str = Form(default="", max_length=200),
@@ -118,6 +119,7 @@ def create_campaign(
     min_headcount: int = Form(default=0, ge=0, le=10000000),
     max_headcount: int = Form(default=0, ge=0, le=10000000),
     booking_url: str = Form(default="", max_length=500),
+    start_discovery: bool = Form(default=False),
     csrf: str = Form(...),
     db: Session = Depends(get_db),
     _: str = Depends(authorize),
@@ -129,6 +131,9 @@ def create_campaign(
             raise HTTPException(422, "Booking link must be a valid HTTPS Calendly URL")
     if min_headcount and max_headcount and min_headcount > max_headcount:
         raise HTTPException(422, "Minimum headcount cannot exceed maximum")
+    if start_discovery and not settings.DEMO_MODE and (
+            not settings.CRUSTDATA_API_KEY or not settings.QWEN_MODEL_SERVER):
+        raise HTTPException(422, "Live seller research requires Crustdata credentials and a local Qwen model")
     clean_domain = normalize_company_domain(seller_domain)
     if seller_domain.strip() and not clean_domain:
         raise HTTPException(422, "Enter a valid public company domain, e.g. acme.com")
@@ -141,7 +146,12 @@ def create_campaign(
     db.add(c)
     db.flush()
     audit(db, c.id, "campaign_created", details={"demo": settings.DEMO_MODE})
+    if start_discovery:
+        c.status = "running"
+        audit(db, c.id, "campaign_started", details={"source": "creation"})
     db.commit()
+    if start_discovery:
+        tasks.add_task(run_campaign, c.id)
     return redirect(f"/campaigns/{c.id}")
 
 
