@@ -52,18 +52,10 @@ def suppress(db, email: str, reason: str):
 
 def classify_reply(body: str) -> str:
     """Conservative deterministic triage; never send an automatic reply."""
-    normalized = re.sub(r"\s+", " ", body.lower())[:2000]
-    if any(term in normalized for term in (
-        "unsubscribe", "remove me", "stop emailing", "do not contact",
-        "don't email me", "opt out", "not interested, stop",
-    )):
-        return "opt_out"
-    if any(term in normalized for term in (
-        "interested", "book a demo", "schedule a call", "send more information",
-        "let's talk", "lets talk", "can we meet",
-    )):
-        return "interested"
-    return "needs_review"
+    from .sales_pitch import reply_intent
+    intent = reply_intent(body)
+    return {"positive": "interested", "question": "needs_review", "unclear": "needs_review"}.get(intent, intent)
+
 
 
 def get_inbound_email(email_id: str) -> dict:
@@ -137,3 +129,4 @@ def handle_resend_event(db, raw: bytes, headers) -> dict:
     db.add(ProcessedResendEvent(event_id=event_id, event_type=kind))
     db.commit()
     return {"status": "processed", "event": kind}
+

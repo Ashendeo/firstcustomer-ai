@@ -235,5 +235,11 @@
     <p class="hint">Configure GMAIL_DEMO_SENDER, GMAIL_DEMO_TO and GMAIL_DEMO_APP_PASSWORD in your local .env to enable private demo delivery.</p>
   {% endif %}
 </section>
+<section class="panel"><h2>Gmail conversations and Calendly</h2>
+<form method="post" action="/campaigns/{{ campaign.id }}/gmail/settings"><input type="hidden" name="csrf" value="{{ csrf }}"><label>Calendly event URL<input name="booking_url" value="{{ campaign.booking_url }}" placeholder="https://calendly.com/your-name/15min"></label><button>Save meeting link</button></form>
+{% if gmail_demo_recipient and campaign.status == 'ready' %}<form method="post" action="/campaigns/{{ campaign.id }}/gmail/start"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Start Gmail conversations in my inbox</button></form>{% endif %}
+<p>Starts one tracked thread per prospect. Reply to the new thread to test answers and scheduling. Repeated clicks reuse it. Unanswered nudges run on days 3 and 7. Enable GMAIL_AUTOMATION_ENABLED for automatic checking.</p>
+<form method="post" action="/gmail/sync"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Check replies and due follow-ups now</button></form></section>
 <section class="panel narrow"><h2>Execution history</h2>{% for e in events %}<div class="history"><span class="dot"></span><div><strong>{{ e.action.replace('_',' ')|title }}</strong>{% if e.action == 'outreach_worker_completed' %}<div class="small">{{ e.details.sent }} sent · {{ e.details.held }} held{% if e.details.reasons %} · Reasons: {{ e.details.reasons|join(', ') }}{% endif %}</div>{% endif %}<div class="small">{{ e.created_at.strftime('%d %b %Y · %H:%M UTC') }}</div></div></div>{% endfor %}</section>
 {% endblock %}
+

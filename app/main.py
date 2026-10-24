@@ -26,6 +26,8 @@ from .integrations import IntegrationError, send_email, verify_calendly_signatur
 from .models import (AuditEvent, Campaign, Lead, ProcessedWebhook, StepCheckpoint,
                      OutreachPolicy, Suppression, OutreachAttempt, InboundReply)
 from .checkpoints import get_checkpoint
+from .models import GmailConversation, GmailMessage
+from . import gmail_conversations
 from .outreach import (get_policy, preview_outreach, run_outreach,
                        ready_for_live, jurisdiction_decision,
                        normalized_email, valid_unsubscribe_signature)
@@ -38,7 +40,23 @@ from .company_lookup import lookup_company
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="FirstCustomer AI", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None)
+from contextlib import asynccontextmanager
+import threading
+
+@asynccontextmanager
+async def lifespan(app):
+    stop = threading.Event()
+    worker = None
+    if settings.GMAIL_AUTOMATION_ENABLED:
+        worker = threading.Thread(target=gmail_conversations.worker_loop, args=(stop,), daemon=True)
+        worker.start()
+    yield
+    stop.set()
+    if worker:
+        worker.join(timeout=1)
+
+
+app = FastAPI(lifespan=lifespan, title="FirstCustomer AI", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None)
 security = HTTPBasic()
 root = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=str(root / "static")), name="static")
@@ -457,6 +475,7 @@ def periodic_outreach_tick(request: Request, tasks: BackgroundTasks,
         OutreachPolicy.authorized_at.is_not(None),
         Campaign.status == "ready",
     )).all()
+    tasks.add_task(gmail_conversations.tick)
     for campaign_id in campaign_ids:
         tasks.add_task(run_outreach, campaign_id)
     return {"status": "scheduled", "campaigns": len(campaign_ids)}
@@ -531,7 +550,9 @@ def lead_detail(lead_id: str, request: Request, db: Session = Depends(get_db), _
     rank = next((row["rank"] for row in competitors if row["lead"].id == lead.id), None)
     return page(request, "lead.html", lead=lead, campaign=lead.campaign,
                 scorecard=scorecard, rank=rank, competitor_count=len(competitors),
-                gmail_demo_enabled=bool(gmail_demo_address()))
+                gmail_demo_enabled=bool(gmail_demo_address()),
+                gmail_conversation=db.get(GmailConversation, lead.id),
+                gmail_messages=gmail_conversations.messages(db, lead.id))
 
 
 @app.post("/leads/{lead_id}/draft")
@@ -675,18 +696,31 @@ async def calendly_webhook(request: Request, db: Session = Depends(get_db)):
         return {"ok": True, "matched": False}
     lead = db.get(Lead, lead_id)
     invitee_email = str(payload.get("email") or "").strip().lower()
-    if not (lead and lead.campaign_id == campaign_id and lead.email.lower() == invitee_email
-            and lead.status in ("sent", "booked", "canceled")):
+    conversation = db.get(GmailConversation, lead_id) if lead else None
+    expected_email = conversation.recipient if conversation else (lead.email.lower() if lead else "")
+    eligible = bool(conversation and any(m.kind == "booking" and m.state == "sent"
+                    for m in gmail_conversations.messages(db, lead_id)))
+    if not (lead and lead.campaign_id == campaign_id and expected_email == invitee_email
+            and (eligible or lead.status in ("sent", "replied", "booked", "canceled"))):
         return {"ok": True, "matched": False}
-    event_key = hashlib.sha256(raw).hexdigest()  # idempotent for retries
+    event_key = hashlib.sha256((action + str(payload.get("uri") or payload.get("event") or raw)).encode()).hexdigest()
     if db.get(ProcessedWebhook, event_key):
         return {"ok": True, "duplicate": True}
+    if conversation and conversation.sandbox:
+        conversation.state = "booked" if action == "invitee.created" else "canceled"
+        db.add(ProcessedWebhook(event_key=event_key))
+        db.commit()
+        return {"ok": True, "matched": True, "status": conversation.state, "sandbox": True}
+    if action == "invitee.canceled" and str(payload.get("event") or "") != lead.booking_event_uri:
+        return {"ok": True, "ignored": True}  # Old cancellation must not cancel a replacement booking.
     if action == "invitee.created":
         lead.status = "booked"
         lead.booked_at = datetime.now(timezone.utc)
         lead.booking_event_uri = str(payload.get("event") or "")[:1500]
     elif action == "invitee.canceled" and lead.status == "booked":
         lead.status = "canceled"
+    if conversation:
+        conversation.state = lead.status
     audit(db, lead.campaign_id, action, lead.id, {"event_uri": lead.booking_event_uri})
     db.add(ProcessedWebhook(event_key=event_key))
     db.commit()
@@ -701,3 +735,52 @@ async def secure_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@app.post("/campaigns/{campaign_id}/gmail/start")
+def start_gmail_conversations(campaign_id: str, tasks: BackgroundTasks,
+                             csrf: str = Form(...), db: Session = Depends(get_db),
+                             _: str = Depends(authorize)):
+    check_csrf(csrf)
+    get_campaign(db, campaign_id)
+    if not gmail_demo_address():
+        raise HTTPException(422, "This action requires the same-account Gmail sandbox")
+    leads = db.scalars(select(Lead).where(Lead.campaign_id == campaign_id)
+                      .order_by(Lead.fit_score.desc()).limit(10)).all()
+    for lead in leads:
+        gmail_conversations.start_conversation(db, lead, sandbox=True)
+    tasks.add_task(gmail_conversations.tick)
+    return redirect(f"/campaigns/{campaign_id}")
+
+
+@app.post("/campaigns/{campaign_id}/gmail/settings")
+def gmail_campaign_settings(campaign_id: str, booking_url: str = Form(default="", max_length=500),
+                            csrf: str = Form(...), db: Session = Depends(get_db),
+                            _: str = Depends(authorize)):
+    check_csrf(csrf)
+    campaign = get_campaign(db, campaign_id)
+    from .agent import safe_booking_link
+    if booking_url and not safe_booking_link(booking_url, campaign_id, "test"):
+        raise HTTPException(422, "Enter an HTTPS Calendly event link")
+    campaign.booking_url = booking_url.strip()
+    db.commit()
+    return redirect(f"/campaigns/{campaign_id}")
+
+
+@app.post("/gmail/sync")
+def sync_gmail(tasks: BackgroundTasks, csrf: str = Form(...), _: str = Depends(authorize)):
+    check_csrf(csrf)
+    tasks.add_task(gmail_conversations.tick)
+    return {"status": "scheduled"}
+
+
+@app.post("/leads/{lead_id}/gmail/pause")
+def pause_gmail(lead_id: str, csrf: str = Form(...), db: Session = Depends(get_db),
+                _: str = Depends(authorize)):
+    check_csrf(csrf)
+    conv = db.get(GmailConversation, lead_id)
+    if not conv:
+        raise HTTPException(404, "No Gmail conversation")
+    conv.state = "paused"
+    db.commit()
+    return redirect(f"/leads/{lead_id}")

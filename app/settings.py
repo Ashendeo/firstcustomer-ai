@@ -35,3 +35,13 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("
 GMAIL_DEMO_SENDER = os.getenv("GMAIL_DEMO_SENDER", "").strip().lower()
 GMAIL_DEMO_TO = os.getenv("GMAIL_DEMO_TO", "").strip().lower()
 GMAIL_DEMO_APP_PASSWORD = os.getenv("GMAIL_DEMO_APP_PASSWORD", "").replace(" ", "")
+
+# Existing demo credentials remain sufficient for sandbox conversations.
+GMAIL_ACCOUNT = os.getenv("GMAIL_ACCOUNT", "").strip().lower()
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "").replace(" ", "")
+GMAIL_LIVE_ENABLED = env_bool("GMAIL_LIVE_ENABLED")
+GMAIL_IMAP_FOLDER = os.getenv("GMAIL_IMAP_FOLDER", "INBOX")
+GMAIL_AUTOMATION_ENABLED = env_bool("GMAIL_AUTOMATION_ENABLED")
+GMAIL_POLL_SECONDS = max(30, int(os.getenv("GMAIL_POLL_SECONDS", "60")))
+GMAIL_FOLLOWUP_DAYS = (3, 7)
+CALENDLY_BOOKING_URL = os.getenv("CALENDLY_BOOKING_URL", "").strip()

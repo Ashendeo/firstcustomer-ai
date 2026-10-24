@@ -61,4 +61,6 @@
     {% endif %}
   </section>
 </div>
+{% if gmail_conversation %}<section class="panel"><h2>Gmail conversation: {{ gmail_conversation.state }}</h2><p>Recipient: {{ gmail_conversation.recipient }}</p><form method="post" action="/leads/{{ lead.id }}/gmail/pause"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Pause conversation</button></form>{% for message in gmail_messages %}<details><summary>{{ message.direction }} / {{ message.kind }} / {{ message.state }}</summary><pre>{{ message.body }}</pre></details>{% endfor %}</section>{% endif %}
 {% endblock %}
+

@@ -179,3 +179,36 @@ class SellerLookup(Base):
     results: Mapped[list] = mapped_column(JSON, default=list)
     error: Mapped[str] = mapped_column(String(80), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class GmailConversation(Base):
+    __tablename__ = "gmail_conversations"
+    lead_id: Mapped[str] = mapped_column(ForeignKey("leads.id"), primary_key=True)
+    account: Mapped[str] = mapped_column(String(254))
+    recipient: Mapped[str] = mapped_column(String(254))
+    sandbox: Mapped[bool] = mapped_column(Boolean, default=True)
+    state: Mapped[str] = mapped_column(String(40), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class GmailMessage(Base):
+    __tablename__ = "gmail_messages"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    lead_id: Mapped[str] = mapped_column(ForeignKey("leads.id"), index=True)
+    message_id: Mapped[str] = mapped_column(String(254), unique=True)
+    direction: Mapped[str] = mapped_column(String(12))
+    kind: Mapped[str] = mapped_column(String(40))
+    subject: Mapped[str] = mapped_column(Text, default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    reply_to_id: Mapped[str] = mapped_column(String(254), default="")
+    state: Mapped[str] = mapped_column(String(20), default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class GmailSendSlot(Base):
+    __tablename__ = "gmail_send_slots"
+    message_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    day: Mapped[str] = mapped_column(String(10))
+    slot: Mapped[int] = mapped_column(Integer)
+    __table_args__ = (UniqueConstraint("day", "slot", name="uq_gmail_send_slot"),)

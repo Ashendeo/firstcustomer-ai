@@ -132,11 +132,12 @@ def ready_for_live(policy: OutreachPolicy) -> str:
     from .gmail_demo import gmail_demo_address
     if gmail_demo_address():
         return "gmail_demo_sink_active"
-    if not settings.RESEND_API_KEY or not settings.FROM_EMAIL:
+    gmail_live = settings.GMAIL_LIVE_ENABLED and settings.GMAIL_ACCOUNT and settings.GMAIL_APP_PASSWORD
+    if not gmail_live and (not settings.RESEND_API_KEY or not settings.FROM_EMAIL):
         return "missing_resend_configuration"
     if not settings.CRUSTDATA_API_KEY:
         return "missing_crustdata_configuration"
-    if not settings.RESEND_WEBHOOK_SECRET:
+    if not gmail_live and not settings.RESEND_WEBHOOK_SECRET:
         return "resend_webhook_secret_required"
     if not settings.CSRF_SECRET or len(settings.CSRF_SECRET) < 16:
         return "missing_signing_secret"
@@ -277,12 +278,21 @@ def run_outreach(campaign_id: str) -> dict:
                 result["reasons"].append("concurrent_reservation")
                 continue
             try:
-                external_id = send_email(
-                    recipient, lead.draft_subject,
-                    lead.draft_body + outreach_footer(lead, policy),
-                    lead.id, reply_to=policy.reply_to,
-                )
-            except IntegrationError:
+                if settings.GMAIL_LIVE_ENABLED:
+                    from . import gmail_conversations as gmail
+                    conv = gmail.start_conversation(db, lead, sandbox=False, reserved=True)
+                    msg = next(m for m in gmail.messages(db, lead.id) if m.kind == "pitch")
+                    gmail.dispatch(db, conv, msg)
+                    if msg.state != "sent":
+                        raise IntegrationError("Gmail first contact held")
+                    external_id = msg.message_id
+                else:
+                    external_id = send_email(
+                        recipient, lead.draft_subject,
+                        lead.draft_body + outreach_footer(lead, policy),
+                        lead.id, reply_to=policy.reply_to,
+                    )
+            except Exception:
                 # Resend may have accepted the request before a timeout. Do not
                 # re-send automatically, even using the same idempotency key.
                 attempt.state = "uncertain"
@@ -309,3 +319,4 @@ def run_outreach(campaign_id: str) -> dict:
         ))
         db.commit()
     return result
+
