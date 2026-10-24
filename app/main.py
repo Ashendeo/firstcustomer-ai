@@ -422,7 +422,8 @@ def lead_detail(lead_id: str, request: Request, db: Session = Depends(get_db), _
         select(Lead).where(Lead.campaign_id == lead.campaign_id)).all())
     rank = next((row["rank"] for row in competitors if row["lead"].id == lead.id), None)
     return page(request, "lead.html", lead=lead, campaign=lead.campaign,
-                scorecard=scorecard, rank=rank, competitor_count=len(competitors))
+                scorecard=scorecard, rank=rank, competitor_count=len(competitors),
+                gmail_demo_enabled=bool(gmail_demo_address()))
 
 
 @app.post("/leads/{lead_id}/draft")
@@ -494,6 +495,8 @@ def approve(lead_id: str, csrf: str = Form(...), db: Session = Depends(get_db),
 def send(lead_id: str, csrf: str = Form(...), db: Session = Depends(get_db), _: str = Depends(authorize)):
     check_csrf(csrf)
     # Acquire row lock on PostgreSQL so repeated clicks cannot send concurrently.
+    if gmail_demo_address():
+        raise HTTPException(409, "Gmail demo is active. Send examples from the campaign's private-inbox demo action instead.")
     lead = db.scalars(select(Lead).where(Lead.id == lead_id).with_for_update()).first()
     if not lead:
         raise HTTPException(404, "Lead not found")
