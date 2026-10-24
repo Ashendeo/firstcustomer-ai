@@ -46,3 +46,48 @@ def test_403_stops_contact_calls_and_preserves_ranked_people(client, token, monk
         assert api.calls == 1
         assert db.scalar(select(AuditEvent).where(
             AuditEvent.action == "crustdata_contact_access_denied")) is not None
+
+
+def test_company_enrichment_people_provide_verified_contact_without_contact_endpoint(
+        client, token, monkeypatch):
+    from app.contact_discovery import company_people_profiles
+    monkeypatch.setattr(settings, "CONTACT_LOOKUP_MODE", "search")
+    monkeypatch.setattr(settings, "DEMO_MODE", False)
+    enriched = {
+        "basic_info": {"name": "Example Inc", "primary_domain": "example.com"},
+        "people": {"decision_makers": [{
+            "name": "Jane Buyer", "title": "Head of Procurement",
+            "contact": {"business_emails": [
+                {"email": "jane@example.com", "status": "deliverable"}
+            ]}
+        }]}
+    }
+    profiles = company_people_profiles(enriched, "example.com")
+    assert len(profiles) == 1
+    class SearchOnly:
+        def people_search_verified(self, *args, **kwargs):
+            raise AssertionError("Should not call people search")
+    with SessionLocal() as db:
+        campaign = Campaign(name="Company-first contacts", product="Procurement suite",
+                            ideal_customer="Enterprise procurement")
+        db.add(campaign)
+        db.commit()
+        result = discover_contact(db, campaign.id, "example.com", "uniqueidentity",
+                                  profiles, {}, SearchOnly(), lambda *args, **kwargs: None,
+                                  {"used": 0}, {"used": 0})
+        assert result["email"] == "jane@example.com"
+        assert result["person"] is not None
+
+
+def test_company_contacts_with_no_verification_are_not_leads(client, token, monkeypatch):
+    from app.contact_discovery import company_people_profiles
+    from app.contact_discovery import verified_business_email_from_search
+    data = {"people": {"founders": [{
+        "name": "Person Without Email", "title": "Founder",
+        "contact": {"business_emails": [
+            {"email": "founder@example.com", "status": "unknown"}
+        ]}
+    }]}}
+    people = company_people_profiles(data, "example.com")
+    assert len(people) == 1
+    assert not verified_business_email_from_search(people[0], "example.com")
