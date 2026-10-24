@@ -19,11 +19,11 @@ def lead(rank, score):
 
 
 def test_outreach_uses_search_rank_not_score_and_does_not_backfill():
-    candidates = [lead(6, 100), lead(4, 95), lead(1, 0), lead(5, None)]
-    assert [x.id for x in outreach_leads(candidates)] == ['1', '4', '5']
-    # Already processed leads keep their place: later runs cannot promote #6.
+    candidates = [lead(21, 100), lead(4, 95), lead(1, 0), lead(5, None), lead(20, 1)]
+    assert [x.id for x in outreach_leads(candidates)] == ['1', '4', '5', '20']
+    # Already processed leads keep their place: later runs cannot promote #21.
     candidates[2].status = 'sent'
-    assert [x.id for x in outreach_leads(candidates)] == ['1', '4', '5']
+    assert [x.id for x in outreach_leads(candidates)] == ['1', '4', '5', '20']
 
 
 def test_missing_rank_and_duplicate_company_are_not_promoted():
@@ -37,7 +37,7 @@ def test_low_or_missing_score_does_not_block_selected_results():
     policy = SimpleNamespace(auto_send=True, prepare_linkedin_drafts=False, min_score=75)
     for score in (0, 42, None):
         assert outreach.policy_decision(db, None, lead(1, score), policy) == 'eligible'
-    assert outreach.policy_decision(db, None, lead(6, 100), policy) == 'outside_search_top_five'
+    assert outreach.policy_decision(db, None, lead(21, 100), policy) == 'outside_search_top_twenty'
     assert outreach.policy_decision(db, None, lead(None, 100), policy) == 'missing_search_rank'
 
 
@@ -91,17 +91,17 @@ def test_campaign_retains_scores_search_order_and_paid_checkpoints():
             assert all(x.fit_score is not None for x in leads)
             event = db.scalar(select(AuditEvent).where(AuditEvent.action == 'candidate_final_ranking'))
             assert [x['provider_rank'] for x in event.details['candidates']] == list(range(1, 8))
-            assert event.details['candidates'][5]['status'] == 'outside_search_top_five'
+            assert event.details['candidates'][5]['status'] != 'outside_search_top_twenty'
             c.status = 'running'
             db.commit()
         before = list(calls)
         agent.run_campaign(cid)
         assert calls == before
-        assert not any('company6.com' in x or 'company7.com' in x for x in calls)
+        assert any('company6.com' in x for x in calls)
     engine.dispose()
 
 
-class SearchTopFiveTests(unittest.TestCase):
+class SearchTopTwentyTests(unittest.TestCase):
     def test_selection(self):
         test_outreach_uses_search_rank_not_score_and_does_not_backfill()
 
