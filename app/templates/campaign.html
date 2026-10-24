@@ -30,7 +30,7 @@
 <div class="stats">
   <div class="stat"><div class="statvalue">{{ ranking_summary.company_search_results if ranking_summary else leads|length }}</div><span>Companies discovered</span></div>
   <div class="stat"><div class="statvalue">{{ ranking_summary.stage2_ranked if ranking_summary else leads|length }}</div><span>Companies ranked</span></div>
-  <div class="stat"><div class="statvalue">{{ leads|length }}</div><span>Verified-contact leads</span></div>
+  <div class="stat"><div class="statvalue">{{ leads|length }}</div><span>Saved contact prospects</span></div>
   <div class="stat"><div class="statvalue">{{ leads|selectattr('person_name')|list|length }}</div><span>Contacts identified</span></div>
   <div class="stat"><div class="statvalue">{{ counts.sent + counts.booked }}</div><span>Outreach sent / booked</span></div>
   <div class="stat"><div class="statvalue">{{ counts.booked }}</div><span>Meetings booked</span></div>
@@ -44,6 +44,9 @@
   {% if ranking_summary.legacy_disappeared %}
   <div class="notice">{{ ranking_summary.legacy_disappeared }} candidates appeared in Stage 1 but not Stage 2 in this older run. The previous implementation could silently drop companies with missing identities or domains. The fix applies to new execution runs; viewing this report does not repeat paid API calls.</div>
   {% endif %}
+  {% endif %}
+  {% if ranking_summary.company_search_results is defined and ranking_summary.company_search_results < 100 and not demo %}
+  <p class="hint">Stage 1 target: 100 companies. Crustdata returned {{ ranking_summary.company_search_results }} for this search; the ranking cannot invent additional results. Review search constraints and API response if fewer than expected.</p>
   {% endif %}
   {% if ranking_summary.search_empty %}
   <div class="notice">Crustdata Company Search returned zero candidates. Ranking did not filter anything. Check the generated search query and geographic filter in Execution Trace; changing the query requires a new search, which may incur an API charge.</div>
@@ -146,7 +149,7 @@
 <section class="panel"><div class="between"><h2>Prospect pipeline</h2><span class="muted">Sorted by search rank</span></div>
 {% if leads %}
 <div class="table-scroll"><table><thead><tr><th>Company</th><th>Decision-maker</th><th>Fit</th><th>Status</th><th></th></tr></thead><tbody>
-{% for lead in leads %}<tr><td><strong>{{ lead.company_name }}</strong><div class="small">{{ lead.domain }}</div></td><td>{{ lead.person_name or 'Not found' }}<div class="small">{{ lead.person_title or 'Unknown role' }}</div></td><td><span class="score">{{ lead.fit_score if lead.fit_score is not none else "Not scored" }}</span>{% if lead.fit_score is not none %}/100{% endif %}</td><td><span class="pill {{ 'success' if lead.status == 'booked' else 'neutral' }}">{{ lead.status }}</span></td><td><a href="/leads/{{ lead.id }}" class="subtle-link">Review &rarr;</a></td></tr>{% endfor %}
+{% for lead in leads %}<tr><td><strong>{{ lead.company_name }}</strong><div class="small">{{ lead.domain }}</div></td><td>{{ lead.person_name or 'Not found' }}<div class="small">{{ lead.person_title or 'Unknown role' }}</div></td><td><span class="score">{{ lead.fit_score if lead.fit_score is not none else "Not scored" }}</span>{% if lead.fit_score is not none %}/100{% endif %}</td><td><span class="pill {{ 'success' if lead.status == 'booked' else 'neutral' }}">{{ lead.status.replace('_',' ') }}</span></td><td><a href="/leads/{{ lead.id }}" class="subtle-link">Review &rarr;</a></td></tr>{% endfor %}
 </tbody></table></div>
 {% else %}<div class="empty">{% if ranking_summary and ranking_summary.company_search_results %}No verified business-email leads. The candidate rankings above show discovered companies and why they were not promoted to leads.{% else %}No companies have been discovered for this campaign yet.{% endif %}</div>{% endif %}
 </section>
