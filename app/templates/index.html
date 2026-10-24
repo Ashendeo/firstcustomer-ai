@@ -7,7 +7,7 @@
 {% if demo %}<div class="notice">DEMO MODE: All displayed prospects are fictional. No paid company enrichment, web-search or outbound email calls are made.</div>{% endif %}
 <div class="columns">
   <section class="panel">
-    <h2>Create a campaign</h2><p class="hint">Give the agent a specific ideal customer profile.</p>
+    <h2>Create a campaign</h2><p class="hint">Provide your company website and a starting ICP. The agent researches the business before generating a targeting query.</p>
     <form action="/campaigns" method="post">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <label>Campaign name<input required minlength="3" maxlength="140" name="name" value="Sports analytics pilots"></label>
