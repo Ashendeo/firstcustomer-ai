@@ -122,7 +122,7 @@ def outreach_footer(lead: Lead, policy: OutreachPolicy) -> str:
     url = settings.PUBLIC_BASE_URL.rstrip("/") + "/unsubscribe/" + lead.id
     url += "/" + unsubscribe_signature(lead.id)
     return ("\n\n---\n"
-            "Business inquiry. To opt out of further outreach, visit: " + url
+            "Commercial outreach from " + settings.FROM_EMAIL + ". To opt out of further outreach, visit: " + url
             + "\nPostal address: " + policy.sender_postal_address.strip())
 
 
