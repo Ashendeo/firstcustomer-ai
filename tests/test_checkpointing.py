@@ -22,6 +22,7 @@ def create_campaign(client, token):
 
 def test_partial_failure_reuses_successful_crustdata_and_model_calls(client, token, monkeypatch):
     campaign_id = create_campaign(client, token)
+    monkeypatch.setattr(settings, "QWEN_PLAN_WITH_MODEL", True)
     monkeypatch.setattr(settings, "DEMO_MODE", False)
     monkeypatch.setattr(settings, "CRUSTDATA_API_KEY", "test-only-key")
     monkeypatch.setattr(settings, "MAX_COMPANIES", 2)
@@ -103,6 +104,7 @@ def test_partial_failure_reuses_successful_crustdata_and_model_calls(client, tok
 
 def test_ambiguous_company_search_not_auto_replayed(client, token, monkeypatch):
     campaign_id = create_campaign(client, token)
+    monkeypatch.setattr(settings, "QWEN_PLAN_WITH_MODEL", True)
     monkeypatch.setattr(settings, "DEMO_MODE", False)
     monkeypatch.setattr(settings, "CRUSTDATA_API_KEY", "test-only-key")
     n = {"search": 0, "model": 0}

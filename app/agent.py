@@ -43,7 +43,7 @@ def safe_booking_link(base: str, campaign_id: str, lead_id: str) -> str:
 def make_plan(c: Campaign) -> dict:
     titles = [t.strip()[:70] for t in c.buyer_titles.split(",") if t.strip()][:4]
     default = {"query": c.ideal_customer[:500], "titles": titles or ["Director"]}
-    if settings.DEMO_MODE:
+    if settings.DEMO_MODE or not settings.QWEN_PLAN_WITH_MODEL:
         return default
     result = llm_json(
         "You plan targeted B2B company and decision-maker search. Return only keys query (a succinct description of matching companies, not an unbounded question) and titles (up to 4 realistic professional title phrases). Don't assume unknown facts.",
