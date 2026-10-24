@@ -110,7 +110,7 @@
 <div class="table-scroll"><table><thead><tr><th>Company</th><th>Decision-maker</th><th>Fit</th><th>Status</th><th></th></tr></thead><tbody>
 {% for lead in leads %}<tr><td><strong>{{ lead.company_name }}</strong><div class="small">{{ lead.domain }}</div></td><td>{{ lead.person_name or 'Not found' }}<div class="small">{{ lead.person_title or 'Unknown role' }}</div></td><td><span class="score">{{ lead.fit_score if lead.fit_score is not none else "Not scored" }}</span>{% if lead.fit_score is not none %}/100{% endif %}</td><td><span class="pill {{ 'success' if lead.status == 'booked' else 'neutral' }}">{{ lead.status }}</span></td><td><a href="/leads/{{ lead.id }}" class="subtle-link">Review →</a></td></tr>{% endfor %}
 </tbody></table></div>
-{% else %}<div class="empty">No prospects yet. Run discovery above.</div>{% endif %}
+{% else %}<div class="empty">{% if ranking_summary and ranking_summary.company_search_results %}No verified business-email leads. The candidate rankings above show discovered companies and why they were not promoted to leads.{% else %}No companies have been discovered for this campaign yet.{% endif %}</div>{% endif %}
 </section>
 <section class="panel"><h2>Metered-operation checkpoints</h2>
 <p class="muted">Completed results are reused on retry; an uncertain call might already have been billed. Replaying it can incur another charge.</p>
