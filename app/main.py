@@ -143,6 +143,22 @@ def run(campaign_id: str, tasks: BackgroundTasks, csrf: str = Form(...), db: Ses
         raise HTTPException(409, "Campaign has already been started")
     if not settings.DEMO_MODE and (not settings.CRUSTDATA_API_KEY or not settings.QWEN_MODEL or not settings.QWEN_MODEL_SERVER):
         raise HTTPException(422, "Live mode requires CRUSTDATA_API_KEY and QWEN_MODEL/QWEN_MODEL_SERVER")
+    # Older campaigns could have made paid calls before checkpoints existed.
+    # Do not silently repeat those legacy calls: records are insufficient to
+    # reconstruct every intermediate response or original Qwen prompt.
+    if c.status == "failed":
+        has_checkpoint = db.scalar(select(StepCheckpoint.id).where(
+            StepCheckpoint.campaign_id == c.id
+        ).limit(1))
+        has_old_leads = db.scalar(select(Lead.id).where(
+            Lead.campaign_id == c.id
+        ).limit(1))
+        if not has_checkpoint and (c.search_query or has_old_leads):
+            raise HTTPException(
+                409,
+                "Legacy campaign has paid work but no checkpoints; cannot safely "
+                "retry. Start a new campaign instead of accidentally refetching."
+            )
     # Preserve all existing leads and completed metered-call checkpoints.\n    # Each pending step is evaluated independently by the worker.\n    c.status, c.error = "running", ""
     audit(db, c.id, "campaign_started")
     db.commit()
@@ -153,12 +169,14 @@ def run(campaign_id: str, tasks: BackgroundTasks, csrf: str = Form(...), db: Ses
 @app.post("/campaigns/{campaign_id}/checkpoints/retry")
 def authorize_checkpoint_retry(
     campaign_id: str, step_key: str = Form(...),
-    csrf: str = Form(...), db: Session = Depends(get_db),
+    confirm: str = Form(...), csrf: str = Form(...), db: Session = Depends(get_db),
     _: str = Depends(authorize),
 ):
     """Manual, potentially chargeable replay of ONE ambiguous provider call."""
     check_csrf(csrf)
     campaign = get_campaign(db, campaign_id)
+    if confirm != "POSSIBLE_DUPLICATE_CHARGE":
+        raise HTTPException(422, "Confirm that replaying this call might be billed again")
     if campaign.status != "failed":
         raise HTTPException(409, "Stop the running campaign before authorizing a replay")
     step = get_checkpoint(db, campaign_id, step_key)
@@ -271,8 +289,10 @@ def send(lead_id: str, csrf: str = Form(...), db: Session = Depends(get_db), _: 
 def campaign_json(campaign_id: str, db: Session = Depends(get_db), _: str = Depends(authorize)):
     c = get_campaign(db, campaign_id)
     leads = db.scalars(select(Lead).where(Lead.campaign_id == c.id)).all()
+    checkpoints = db.scalars(select(StepCheckpoint).where(StepCheckpoint.campaign_id == c.id)).all()
     return {
         "id": c.id, "status": c.status, "error": c.error, "search_query": c.search_query,
+        "checkpoints": [{"step": s.step_key, "status": s.status, "attempts": s.attempts} for s in checkpoints],
         "leads": [{"id": l.id, "company": l.company_name, "domain": l.domain,
                    "person": l.person_name, "score": l.fit_score, "status": l.status,
                    "source": l.source} for l in leads],
