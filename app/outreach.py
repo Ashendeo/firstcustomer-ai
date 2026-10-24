@@ -129,6 +129,8 @@ def outreach_footer(lead: Lead, policy: OutreachPolicy) -> str:
 def ready_for_live(policy: OutreachPolicy) -> str:
     if not settings.RESEND_API_KEY or not settings.FROM_EMAIL:
         return "missing_resend_configuration"
+    if not settings.RESEND_WEBHOOK_SECRET:
+        return "resend_webhook_secret_required"
     if not settings.CSRF_SECRET or len(settings.CSRF_SECRET) < 16:
         return "missing_signing_secret"
     url = urlsplit(settings.PUBLIC_BASE_URL)
@@ -222,7 +224,7 @@ def run_outreach(campaign_id: str) -> dict:
                     continue
                 try:
                     enrich_contact(db, campaign, lead, api)
-                except (Exception) as exc:
+                except Exception as exc:
                     # Never retry an ambiguous chargeable request automatically.
                     result["held"] += 1
                     result["reasons"].append(type(exc).__name__)
