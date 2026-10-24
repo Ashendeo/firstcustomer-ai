@@ -27,7 +27,9 @@ def test_partial_failure_reuses_successful_crustdata_and_model_calls(client, tok
     monkeypatch.setattr(settings, "CRUSTDATA_API_KEY", "test-only-key")
     monkeypatch.setattr(settings, "MAX_COMPANIES", 2)
     monkeypatch.setattr(settings, "MAX_PEOPLE_SEARCHES", 2)
-    calls = {"company": 0, "people": 0, "plan": 0, "evaluate": 0}
+    monkeypatch.setattr(settings, "MAX_PROSPECT_ENRICHMENTS", 0)
+    monkeypatch.setattr(settings, "MAX_CONTACT_ENRICHMENTS", 4)
+    calls = {"company": 0, "people": 0, "email": 0, "plan": 0, "evaluate": 0}
 
     class FakeCrustdata:
         def company_search(self, query, country, limit, min_headcount=0, max_headcount=0):
@@ -42,7 +44,17 @@ def test_partial_failure_reuses_successful_crustdata_and_model_calls(client, tok
 
         def people_search(self, domain, titles, limit=2):
             calls["people"] += 1
-            return []
+            return [{"crustdata_person_id": domain, "basic_profile": {"name": "Verified Buyer"},
+                     "experience": {"employment_details": {
+                         "current": [{"title": "HR Director"}]}},
+                     "social_handles": {"professional_network_identifier": {
+                         "profile_url": "https://www.linkedin.com/in/" + domain.split(".")[0],
+                     }}}]
+
+        def business_email_enrich(self, profile_url):
+            calls["email"] += 1
+            domain = profile_url.rsplit("/", 1)[-1] + ".example"
+            return [{"email": "buyer@" + domain, "status": "deliverable"}]
 
     def fake_model(instructions, payload):
         if "You plan" in instructions:
@@ -88,7 +100,7 @@ def test_partial_failure_reuses_successful_crustdata_and_model_calls(client, tok
     assert approved.status_code == 303
     client.post(f"/campaigns/{campaign_id}/run", data={"csrf": token})
 
-    assert calls == {"company": 1, "people": 2, "plan": 1, "evaluate": 3}
+    assert calls == {"company": 1, "people": 2, "email": 2, "plan": 1, "evaluate": 3}
     with SessionLocal() as db:
         assert db.get(Campaign, campaign_id).status == "ready"
         leads = db.scalars(select(Lead).where(Lead.campaign_id == campaign_id)).all()
