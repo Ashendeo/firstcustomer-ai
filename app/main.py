@@ -253,6 +253,44 @@ def run(campaign_id: str, tasks: BackgroundTasks, csrf: str = Form(...), db: Ses
     return redirect(f"/campaigns/{c.id}")
 
 
+@app.post("/campaigns/{campaign_id}/contacts/recover")
+def recover_campaign_contacts(
+    campaign_id: str, tasks: BackgroundTasks,
+    confirm: str = Form(...), csrf: str = Form(...),
+    db: Session = Depends(get_db), _: str = Depends(authorize),
+):
+    """Resume saved company search/enrichment and explore additional contacts.
+
+    No existing metered checkpoint is replayed. New fallback searches and
+    emails can cost credits, so the operator explicitly authorizes them.
+    """
+    check_csrf(csrf)
+    c = get_campaign(db, campaign_id)
+    if confirm != "ALLOW_NEW_CONTACT_LOOKUPS":
+        raise HTTPException(422, "Confirm possible new Crustdata contact charges")
+    policy = get_policy(db, campaign_id)
+    if policy.mode == "live":
+        raise HTTPException(409, "Pause live outreach before recovering contacts")
+    if c.status != "ready":
+        raise HTTPException(409, "Contact recovery requires a completed campaign")
+    if settings.DEMO_MODE:
+        raise HTTPException(409, "Contact recovery is for real Crustdata campaigns only")
+    if not db.scalar(select(StepCheckpoint.id).where(
+            StepCheckpoint.campaign_id == campaign_id,
+            StepCheckpoint.step_key == "company_search")):
+        raise HTTPException(409, "Missing company search checkpoint; no safe recovery")
+    if not settings.CRUSTDATA_API_KEY:
+        raise HTTPException(422, "CRUSTDATA_API_KEY is required")
+    c.status = "running"
+    audit(db, c.id, "contact_recovery_started",
+          details={"company_search": "reuse_saved_checkpoint",
+                   "max_new_fallback_searches": settings.MAX_PEOPLE_FALLBACK_SEARCHES,
+                   "max_new_email_enrichments": settings.MAX_CONTACT_ENRICHMENTS})
+    db.commit()
+    tasks.add_task(run_campaign, campaign_id)
+    return redirect(f"/campaigns/{campaign_id}")
+
+
 @app.post("/campaigns/{campaign_id}/rescore")
 def rescore_saved_evidence(
     campaign_id: str, confirm: str = Form(...),
