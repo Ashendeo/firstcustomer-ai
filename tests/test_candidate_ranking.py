@@ -25,15 +25,15 @@ def test_provider_rank_combines_with_observed_evidence():
     )
     companies = [
         {"basic_info": {"name": "Search first", "primary_domain": "first.example"}},
-        {"basic_info": {"name": "Search second", "primary_domain": "second.example"}},
-        {"basic_info": {"name": "Search third", "primary_domain": "third.example",
+        {"basic_info": {"name": "Search second", "primary_domain": "second.example",
                          "description": "Cloud security compliance"}},
+        {"basic_info": {"name": "Search third", "primary_domain": "third.example"}},
         {"basic_info": {"name": "Search fourth", "primary_domain": "fourth.example"}},
         {"basic_info": {"name": "Search fifth", "primary_domain": "fifth.example"}},
     ]
     ranked = prioritize_companies(campaign, companies, None)
-    assert ranked[0]["company"]["basic_info"]["name"] == "Search third"
-    assert ranked[0]["provider_rank"] == 3
+    assert ranked[0]["company"]["basic_info"]["name"] == "Search second"
+    assert ranked[0]["provider_rank"] == 2
     assert ranked[0]["pre_enrichment_evidence_score"] is not None
     assert ranked[-1]["provider_rank"] == 5
     assert all(0 <= r["discovery_priority"] <= 100 for r in ranked)
