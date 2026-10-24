@@ -48,7 +48,7 @@
   {% if ranking_summary.company_search_results is defined and not demo %}
   {% set requested = ranking_summary.company_search_requested|default(100) %}
   {% if ranking_summary.company_search_results < requested %}
-  <div class="notice">Stage 1 requested {{ requested }} companies, but Crustdata returned {{ ranking_summary.company_search_results }}. No candidates were removed by the ranking step. Check the company search query, country filter and API response in Execution Trace. Previously completed searches are checkpointed and will not be silently repeated.</div>
+  <div class="notice">Stage 1 target: 100 companies. This search requested {{ requested }} companies, but Crustdata returned {{ ranking_summary.company_search_results }}. No candidates were removed by the ranking step. Check the company search query, country filter and API response in Execution Trace. Previously completed searches are checkpointed and will not be silently repeated.</div>
   {% else %}
   <p class="hint">Stage 1 company discovery fulfilled its target of {{ requested }} candidates.</p>
   {% endif %}
