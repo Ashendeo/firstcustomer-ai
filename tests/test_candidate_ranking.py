@@ -241,3 +241,49 @@ def test_existing_campaign_exposes_historical_dropped_results_without_refetch(
     assert "Historical campaign" in page.text
     assert "1 candidates appeared in Stage 1 but not Stage 2" in page.text
     # No Crustdata imports or API calls are needed to render the saved history.
+
+
+def test_known_person_without_verified_email_remains_saved_prospect(client, token, monkeypatch):
+    cid = _campaign(client, token)
+    monkeypatch.setattr(settings, "DEMO_MODE", False)
+    monkeypatch.setattr(settings, "CONTACT_LOOKUP_MODE", "search")
+    monkeypatch.setattr(settings, "QWEN_PLAN_WITH_MODEL", False)
+    monkeypatch.setattr(settings, "CRUSTDATA_API_KEY", "test")
+    monkeypatch.setattr(settings, "MAX_COMPANIES", 1)
+    monkeypatch.setattr(settings, "MAX_PROSPECT_ENRICHMENTS", 0)
+    monkeypatch.setattr(settings, "MAX_PEOPLE_SEARCHES", 1)
+    class Provider:
+        def company_search(self, *args):
+            return [{"basic_info": {"name": "Target Company",
+                                    "primary_domain": "target.example"}}]
+        def people_search(self, domain, titles, limit=4):
+            return [{"basic_profile": {"name": "A Decision Maker"},
+                     "experience": {"employment_details": {
+                         "current": [{"title": "Head of Operations"}]}},
+                     "social_handles": {"professional_network_identifier": {
+                         "profile_url": "https://www.linkedin.com/in/decision-maker"}}}]
+        def people_search_verified(self, *args, **kwargs):
+            return []
+    monkeypatch.setattr(agent, "Crustdata", Provider)
+    with SessionLocal() as db:
+        db.get(Campaign, cid).status = "running"
+        db.commit()
+    agent.run_campaign(cid)
+    with SessionLocal() as db:
+        campaign = db.get(Campaign, cid)
+        assert campaign.status == "ready", campaign.error
+        leads = db.scalars(select(Lead).where(Lead.campaign_id == cid)).all()
+        assert len(leads) == 1
+        lead = leads[0]
+        assert lead.person_name == "A Decision Maker"
+        assert lead.status == "needs_email_verification"
+        assert lead.email == ""
+        assert lead.draft_subject == "" and lead.draft_body == ""
+        final = db.scalar(select(AuditEvent).where(
+            AuditEvent.campaign_id == cid,
+            AuditEvent.action == "candidate_final_ranking"))
+        assert final.details["candidates"][0]["status"] == "contact_found_needs_email_verification"
+        assert final.details["candidates"][0]["lead_id"] == lead.id
+    page = client.get(f"/campaigns/{cid}")
+    assert "needs email verification" in page.text
+    assert "Stage 1 target: 100 companies" in page.text
