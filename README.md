@@ -1,6 +1,6 @@
 # FirstCustomer AI — FastAPI / Railway / PostgreSQL MVP
 
-A **single FastAPI service** that turns a product description into a researched lead list and human-approved B2B outreach. Uses Crustdata for company/person discovery, Qwen-Agent with an open-weight Qwen model for search planning and grounded fit assessments, Resend for optional *explicitly approved* emails, and Calendly booking links + signed webhooks for confirmed meetings.
+A **single FastAPI service** that turns a product description into a researched lead list and human-approved B2B outreach. Uses Crustdata for company/person discovery, a local open-weight Qwen model served by Ollama for search planning and grounded fit assessments, Resend for optional *explicitly approved* emails, and Calendly booking links + signed webhooks for confirmed meetings.
 
 **Demo mode is offline and fully fictional.** The app is an early-stage single-operator MVP, not a multi-tenant sales automation product. It does not autonomously negotiate replies, verify business emails, or guarantee meetings.
 
@@ -11,7 +11,7 @@ Browser + HTTP Basic authentication
        |
 FastAPI (one Railway web service, one worker)
   |-- Campaign forms / lead approval / admin API
-  |-- agent.py (bounded Qwen-Agent planning + evaluating)
+  |-- agent.py (bounded bounded Ollama JSON evaluation (optional planning))
   |-- crustdata.py (current Company & People Search REST APIs)
   |-- integrations.py (approved Resend sends; signed Calendly webhook)
   |-- Postgres (campaigns, leads, audit log, webhook deduplication)
@@ -42,7 +42,7 @@ python -m pytest -q
 
 ## Local Qwen model setup on Windows
 
-Install [Ollama](https://ollama.com/download/windows), then in PowerShell run:\n\n```powershell\nollama pull qwen3:4b\nollama list\n```\n\nOllama usually serves its OpenAI-compatible API at `http://localhost:11434/v1`. Qwen-Agent is installed from `requirements.txt` and connects to this server. For the first test use `QWEN_MODEL=qwen3:4b` and `QWEN_MODEL_SERVER=http://localhost:11434/v1` in `.env`. Run `alembic upgrade head` and start FastAPI as before. On memory-constrained Windows machines, choose a smaller supported Qwen model and update both Ollama and `.env`. The generated JSON can be imperfect; failures appear in campaign logs rather than inventing lead data.\n\n## Real Crustdata + Qwen-Agent mode
+Install [Ollama](https://ollama.com/download/windows), then in PowerShell run:\n\n```powershell\nollama pull qwen3:4b\nollama list\n```\n\nOllama usually serves its OpenAI-compatible API at `http://localhost:11434/v1`. The app uses httpx to call Ollama's native structured JSON API directly. Each evaluation makes exactly one request with `think=false` and `format=json`, and a configured timeout. Qwen-Agent is not required for these simple structured tasks. For the first test use `QWEN_MODEL=qwen3:4b` and `QWEN_MODEL_SERVER=http://localhost:11434/v1` in `.env`. Run `alembic upgrade head` and start FastAPI as before. On memory-constrained Windows machines, choose a smaller supported Qwen model and update both Ollama and `.env`. If Ollama cannot return valid JSON, the step fails clearly without initiating a second model call. Qwen-based query planning is disabled by default.\n\n## Real Crustdata + Qwen-Agent mode
 
 Set:
 
@@ -51,6 +51,9 @@ DEMO_MODE=false
 CRUSTDATA_API_KEY=<secret>
 QWEN_MODEL=qwen3:4b
 QWEN_MODEL_SERVER=http://localhost:11434/v1
+QWEN_TIMEOUT_SECONDS=120
+QWEN_NUM_PREDICT=900
+QWEN_PLAN_WITH_MODEL=false
 MAX_COMPANIES=5
 MAX_PEOPLE_SEARCHES=3
 ```
@@ -58,6 +61,26 @@ MAX_PEOPLE_SEARCHES=3
 Run again. Crustdata Company Search returns company records, then Crustdata People Search filters people by current employer domain and title. The LLM constructs a bounded search plan and analyzes supplied records. Optional headcount ranges are enforced as Crustdata structured search filters (premium charges apply). One lead is created per company. A missing decision-maker **stays missing**, rather than being invented. The app deliberately does **not** automatically enrich private emails or guess them from names.
 
 **Important costs:** Crustdata charges credits for returned records and premium field groups. Person Search title and experience fields may be premium. Locally hosted Qwen has no per-token API bill, but consumes local CPU/GPU, RAM and electricity. Hard limits cap records and people searches, but there is no full accounting-budget circuit breaker yet.
+
+## Qwen troubleshooting: repeated fallback messages / slow inference
+
+Earlier versions called Qwen-Agent first and then retried via Ollama, potentially doing two generations per lead. The new runtime uses **one** native Ollama request per lead, disables thinking explicitly, and limits request time. Crustdata company search runs directly from your ideal-customer description without an initial model request.
+
+On Windows, stop the old FastAPI process (Ctrl+C), install updated source, then check Ollama:
+
+```powershell
+ollama ps
+ollama list
+```
+
+Restart FastAPI with `MAX_COMPANIES=1` and `MAX_PEOPLE_SEARCHES=1` for the first live test. Adjust `QWEN_TIMEOUT_SECONDS` if CPU inference is slow, or use a smaller model. Be careful retrying old uncheckpointed campaigns: Crustdata searches can be charged twice. Merge the separate durable-checkpointing PR before repeatedly rerunning existing campaigns.
+
+Independent model test:
+
+```powershell
+$body = @{model="qwen3:4b";stream=$false;think=$false;format="json";messages=@(@{role="user";content='Return JSON with key "ok" and value true.'})} | ConvertTo-Json -Depth 10
+(Invoke-RestMethod -Uri "http://localhost:11434/api/chat" -Method Post -ContentType "application/json" -Body $body).message.content
+```
 
 ## Optional email sending
 
