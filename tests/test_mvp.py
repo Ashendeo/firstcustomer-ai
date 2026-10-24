@@ -77,7 +77,7 @@ def test_qwen_adapter(monkeypatch):
     import sys
     from types import ModuleType
     from app.qwen_runtime import generate_json, _json_object, QwenResponseError
-    assert _json_object("thinking...\\n```json\\n{\\"score\\": 5}\\n```") == {"score": 5}
+    assert _json_object('thinking...\n```json\n{"score": 5}\n```') == {"score": 5}
     class FakeModel:
         def chat(self, messages, stream):
             assert stream is False
