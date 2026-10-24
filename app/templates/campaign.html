@@ -50,7 +50,7 @@
   {% elif ranking_summary.new_leads == 0 %}
   <div class="notice">Companies were discovered, but none became new Leads. This is a contact qualification outcome, not a ranking filter. Review the skipped statuses below and adjust the people/contact-enrichment limits if needed.</div>
   {% endif %}
-  <p class="hint">Execution caps: {{ ranking_summary.advanced_enrichments_attempted }} company enrichments attempted, people searches limited to {{ ranking_summary.people_search_limit }}, contact enrichments limited to {{ ranking_summary.contact_enrichment_limit }}.</p>
+  <p class="hint">Execution caps: {{ ranking_summary.advanced_enrichments_attempted }} company enrichments attempted, people searches limited to {{ ranking_summary.people_search_limit }}, contact enrichments limited to {{ ranking_summary.contact_enrichment_limit }}.{% if ranking_summary.fallback_people_searches_attempted is defined %} Additional people searches: {{ ranking_summary.fallback_people_searches_attempted }} / {{ ranking_summary.fallback_people_search_limit }}; email profiles examined: {{ ranking_summary.contact_enrichments_attempted }}.{% endif %}</p>
   {% endif %}
   <p class="hint">Stage 1 combines the Crustdata hybrid relevance order (70%) with whatever company evidence is already available (30%). The 0–100 provider relevance index is a normalized <em>rank position</em>, not a probability or Crustdata-provided score. Stage 2 scores firms again after paid advanced enrichment, sorts by domain-specific company evidence, and uses stage-1 priority as a tie-breaker. Contact searches follow Stage 2. The final report reflects contact qualification, and keeps firms with no deliverable email visible as skipped candidates.</p>
   {% set stage1 = ranking_events.candidate_search_prioritization or {} %}
@@ -76,15 +76,47 @@
   </details>{% endif %}
   {% if final.candidates %}
   <h3>Final candidate outcomes</h3>
-  <div class="table-scroll"><table><thead><tr><th>Rank</th><th>Company</th><th>Score</th><th>Outcome</th></tr></thead><tbody>
+  <div class="table-scroll"><table><thead><tr><th>Rank</th><th>Company</th><th>Score</th><th>Best decision-maker</th><th>Outcome</th></tr></thead><tbody>
     {% for item in final.candidates %}<tr>
       <td>#{{ item.final_rank }}</td><td>{{ item.company }}</td>
       <td>{{ item.score if item.score is not none else 'Unscored' }}</td>
+      <td>
+      {% if item.suggested_contact %}
+        {% set cc = item.suggested_contact %}
+        {% if cc.profile_url %}
+          <a href="{{ cc.profile_url }}" target="_blank" rel="noopener noreferrer">{{ cc.name or 'Profile' }}</a>
+        {% else %}{{ cc.name or 'Unnamed prospect' }}{% endif %}
+        <div class="small">{{ cc.title or 'Unknown title' }} · {{ cc.verification.replace('_', ' ') }}</div>
+        {% if cc.buying_role %}<div class="small">{{ cc.buying_role.replace('_', ' ') }}</div>{% endif %}
+        {% if item.contact_candidates and item.contact_candidates|length > 1 %}
+        <details><summary>Other contact candidates</summary>
+          {% for p in item.contact_candidates %}
+            <p class="small">{{ p.name }} — {{ p.title }} · {{ p.verification.replace('_',' ') }}</p>
+          {% endfor %}
+        </details>{% endif %}
+      {% elif item.lead_id %}Verified business-email contact
+      {% else %}No matching contact profile{% endif %}
+      </td>
       <td>{% if item.lead_id %}<a href="/leads/{{ item.lead_id }}">{{ item.status.replace('_', ' ') }}</a>{% else %}{{ item.status.replace('_', ' ') }}{% endif %}{% if item.reason %}<div class="small">{{ item.reason.replace('_', ' ') }}</div>{% endif %}</td>
     </tr>{% endfor %}
   </tbody></table></div>{% endif %}
   {% if not stage1.candidates and not stage2.candidates and not final.candidates %}
   <p class="empty">Ranking has not yet been run on this campaign.</p>{% endif %}
+</section>
+<section class="panel">
+  <h2>Find more verified decision-makers</h2>
+  <p class="hint">Runs Crustdata People Search for the inferred buying committee, then attempts a verified-work-email-index search and a broader current-employer search. Profiles are ranked by role; business emails still must be deliverable and match the company domain. Results and billing-sensitive requests are checkpointed.</p>
+  {% if campaign.status == 'ready' and outreach_policy.mode != 'live' and not demo %}
+  <form method="post" action="/campaigns/{{ campaign.id }}/contacts/recover">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label><input type="checkbox" name="confirm" value="ALLOW_NEW_CONTACT_LOOKUPS" required>
+      I authorize additional, possibly billable Crustdata searches and email enrichments.
+    </label>
+    <button type="submit" class="secondary">Recover verified buyer contacts</button>
+  </form>
+  {% elif outreach_policy.mode == 'live' %}
+  <p class="hint">Pause the live outreach policy before running contact recovery.</p>
+  {% endif %}
 </section>
 <section class="panel">
 <div class="between"><h2>Company ranking and comparison</h2><span class="muted">Descending evidence score, not purchase probability</span></div>
