@@ -43,6 +43,7 @@ def test_enrichment_reorders_contact_budget_and_persists_final_ranking(
         client, token, monkeypatch):
     cid = _campaign(client, token)
     monkeypatch.setattr(settings, "DEMO_MODE", False)
+    monkeypatch.setattr(settings, "CONTACT_LOOKUP_MODE", "contact")
     monkeypatch.setattr(settings, "QWEN_PLAN_WITH_MODEL", False)
     monkeypatch.setattr(settings, "CRUSTDATA_API_KEY", "fake")
     monkeypatch.setattr(settings, "MAX_COMPANIES", 3)
