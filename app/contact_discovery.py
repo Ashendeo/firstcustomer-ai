@@ -16,6 +16,43 @@ from .outreach import choose_verified_email
 from .scoring import current_role
 
 
+def verified_business_email_from_search(person: dict, domain: str) -> str:
+    """Accept an actual verified work address from People Search, never a flag.
+
+    Supports common native people-search representations; search fields vary
+    across Crustdata plans. Explicit validation is required for all shapes.
+    """
+    domain = domain.lower().removeprefix("www.")
+    sources = []
+    contact = person.get("contact") or {}
+    sources.extend(contact.get("business_emails") or [])
+    sources.extend(person.get("business_emails") or [])
+    for employer in person.get("current_employers") or []:
+        if not isinstance(employer, dict):
+            continue
+        domains = employer.get("employer_company_website_domain") or []
+        if isinstance(domains, str):
+            domains = [domains]
+        if domain not in [str(d).lower().removeprefix("www.") for d in domains]:
+            continue
+        business = employer.get("business_emails") or {}
+        if isinstance(business, dict):
+            sources.extend({"email": address, **(metadata if isinstance(metadata, dict) else {})}
+                           for address, metadata in business.items())
+    if isinstance(contact.get("business_email"), str):
+        sources.append({"email": contact["business_email"],
+                        "status": contact.get("business_email_status")})
+    for record in sources:
+        if not isinstance(record, dict):
+            continue
+        address = str(record.get("email") or record.get("value") or "").lower().strip()
+        status = str(record.get("status") or record.get("verification_status") or "").lower()
+        if (status in ("deliverable", "verified") and
+                address.count("@") == 1 and address.rsplit("@", 1)[1] == domain):
+            return address
+    return ""
+
+
 def profile_url(person: dict) -> str:
     social = (person.get("social_handles") or {}).get("professional_network_identifier") or {}
     url = str(social.get("profile_url") or "").strip()
@@ -95,8 +132,14 @@ def discover_contact(db, campaign_id: str, domain: str, discovery_key: str,
             if url:
                 attempted_urls.add(url)
             reason = "no_profile_url"
+            search_email = verified_business_email_from_search(person, domain)
             if not same_current_employer(person, domain):
                 reason = "current_employer_mismatch"
+            elif search_email:
+                chosen, email = person, search_email
+                reason = "verified_work_email_from_people_search"
+            elif settings.CONTACT_LOOKUP_MODE == "search":
+                reason = "search_profile_lacks_verified_email"
             elif not url:
                 reason = "no_profile_url"
             else:
@@ -222,7 +265,7 @@ def discover_contact(db, campaign_id: str, domain: str, discovery_key: str,
         "people_considered": len(primary) + len(secondary),
         "fallback_used": bool(secondary),
         "fallback_profiles": len(secondary),
-        "reason": ("verified_deliverable_company_email" if chosen
+        "reason": ("verified_business_email_from_search" if chosen and settings.CONTACT_LOOKUP_MODE == "search" else "verified_deliverable_company_email" if chosen
                    else ("contact_api_permission_denied" if contact_budget["permission_denied"]
                          else "contact_enrichment_budget_exhausted" if
                          contact_budget["used"] >= settings.MAX_CONTACT_ENRICHMENTS
