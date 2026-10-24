@@ -267,3 +267,26 @@ def test_inbound_opt_out_suppresses_and_unsubscribe_requires_post(client, monkey
         assert db.get(InboundReply, "received-optout-001").classification == "opt_out"
         assert db.get(Lead, lead_id).status == "unsubscribed"
     assert client.post(f"/unsubscribe/{lead_id}/{token}").status_code == 200
+
+
+def test_missing_crustdata_contact_permission_stops_paid_batch(client, monkeypatch):
+    from app.crustdata import CrustdataError
+    campaign_id = campaign_with_leads(number=4, include_email=False)
+    configure_live(campaign_id, monkeypatch)
+    calls = []
+    class NoContactPermission:
+        def business_email_enrich(self, profile_url):
+            calls.append(profile_url)
+            raise CrustdataError("Crustdata HTTP 403 at /person/contact/enrich")
+    monkeypatch.setattr(outreach, "Crustdata", NoContactPermission)
+    monkeypatch.setattr(outreach, "send_email", lambda *a, **kw:
+                        (_ for _ in ()).throw(AssertionError("Must never send")))
+    result = outreach.run_outreach(campaign_id)
+    assert result["sent"] == 0
+    assert len(calls) == 1
+    assert "CrustdataError" in result["reasons"]
+    # The failed request is uncertain. A retry must neither repeat that
+    # charge nor advance to other uncheckpointed contacts.
+    again = outreach.run_outreach(campaign_id)
+    assert again["sent"] == 0
+    assert len(calls) == 1
