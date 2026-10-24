@@ -14,6 +14,7 @@ from .scoring import score_company
 from .seller_research import make_research_plan
 from .market_skill import get_market_playbook, prioritize_contacts, contact_role_match
 from .market_scoring import score_market_fit
+from .candidate_ranking import prioritize_companies, report_priorities
 from .outreach import choose_verified_email
 
 logger = logging.getLogger(__name__)
@@ -197,10 +198,17 @@ def run_campaign(campaign_id: str):
             seen = set()
             contact_attempts = 0
             skill = (research.get("market_skill") or {}) if c.seller_domain else {}
+            prioritized = prioritize_companies(c, companies, skill)
+            audit(db, c.id, "candidate_search_prioritization", details={
+                "approach": "hybrid Crustdata rank (70%) + pre-enrichment evidence (30%)",
+                "candidates": report_priorities(prioritized),
+                "note": "Indices prioritize paid enrichment, not probabilities of buying.",
+            })
+            db.commit()
             # A candidate becomes a Lead ONLY after verified business-email
             # enrichment. Even a strong company fit alone is not contactability.
-            for i, initial_company in enumerate(companies):
-                company = initial_company
+            for i, prioritized_item in enumerate(prioritized):
+                company = prioritized_item["company"]
                 info = company.get("basic_info") or {}
                 company_name = str(info.get("name") or "")[:200]
                 domain = str(info.get("primary_domain") or "").lower().removeprefix("www.")[:180]
@@ -367,6 +375,11 @@ def run_campaign(campaign_id: str):
                     "company_record": company, "person_record": person or {},
                     "provider": "DEMO" if settings.DEMO_MODE else "Crustdata",
                     "scorecard": candidate_score,
+                    "search_prioritization": {
+                        "provider_rank": prioritized_item["provider_rank"],
+                        "priority_index": prioritized_item["discovery_priority"],
+                        "pre_enrichment_score": prioritized_item["pre_enrichment_evidence_score"],
+                    },
                     "contact_role": selected_role,
                     "email_verification": ("fictional_demo" if settings.DEMO_MODE
                                            else "crustdata_deliverable"),
