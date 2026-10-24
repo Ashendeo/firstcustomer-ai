@@ -121,6 +121,8 @@ class OutreachAttempt(Base):
     campaign_id: Mapped[str] = mapped_column(String(36), index=True)
     email: Mapped[str] = mapped_column(String(254), index=True)
     day_utc: Mapped[str] = mapped_column(String(10), index=True)
+    day_slot: Mapped[int] = mapped_column(Integer)
+    __table_args__ = (UniqueConstraint("day_utc", "day_slot", name="uq_outreach_global_day_slot"),)
     state: Mapped[str] = mapped_column(String(24), default="reserved")
     provider_id: Mapped[str] = mapped_column(String(150), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
