@@ -23,20 +23,8 @@ DEMO_PEOPLE = [
 
 
 def llm_json(instructions: str, payload: dict) -> dict:
-    if not settings.OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY required for live agent")
-    from openai import OpenAI
-    client = OpenAI(api_key=settings.OPENAI_API_KEY, timeout=35, max_retries=1)
-    response = client.responses.create(
-        model=settings.OPENAI_MODEL,
-        instructions=instructions + "\nReturn one valid JSON object only. No Markdown fences.",
-        input=json.dumps(payload, ensure_ascii=False)[:9000],
-        max_output_tokens=600,
-    )
-    output = response.output_text.strip()
-    if output.startswith("```"):
-        output = output.strip('`').removeprefix('json').strip()
-    return json.loads(output)
+    from .qwen_runtime import generate_json
+    return generate_json(instructions, payload)
 
 
 def safe_booking_link(base: str, campaign_id: str, lead_id: str) -> str:
