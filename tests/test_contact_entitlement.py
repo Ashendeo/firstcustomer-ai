@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 def test_403_stops_contact_calls_and_preserves_ranked_people(client, token, monkeypatch):
     monkeypatch.setattr(settings, "DEMO_MODE", False)
+    monkeypatch.setattr(settings, "CONTACT_LOOKUP_MODE", "contact")
     campaign = Campaign(name="Contact access denied", product="Business software for teams",
                         ideal_customer="B2B companies")
     with SessionLocal() as db:
