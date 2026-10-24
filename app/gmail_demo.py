@@ -23,6 +23,8 @@ class GmailDemoConfigError(RuntimeError):
 
 
 def gmail_demo_address() -> str:
+    if settings.GMAIL_LIVE_ENABLED and settings.GMAIL_ACCOUNT:
+        return ""
     sender = settings.GMAIL_DEMO_SENDER
     recipient = settings.GMAIL_DEMO_TO
     if not (sender and sender == recipient and sender.endswith("@gmail.com")
@@ -66,6 +68,7 @@ def send_campaign_demo(campaign_id: str) -> dict:
             Lead.campaign_id == campaign_id,
             Lead.draft_body != "",
         ).order_by(Lead.fit_score.desc())).all()
+        from .sales_pitch import sales_pitch
         for lead in leads[:10]:  # deliberately bounded
             key = "demo_gmail:" + lead.id
             from .checkpoints import get_checkpoint
@@ -74,10 +77,10 @@ def send_campaign_demo(campaign_id: str) -> dict:
                 outcome["already_checkpointed"] += 1
                 continue
             # A changed draft / previous uncertain call cannot silently send again.
-            subject = "[FirstCustomer DEMO] " + lead.company_name + " — " + lead.draft_subject
-            body = ("SANDBOX EMAIL — NOT SENT TO ANY PROSPECT\n"
+            subject = "[FirstCustomer DEMO] " + lead.company_name + " â€” " + lead.draft_subject
+            body = ("SANDBOX EMAIL â€” NOT SENT TO ANY PROSPECT\n"
                     "Original target: " + lead.company_name + "\n"
-                    "Model score: " + str(lead.fit_score) + "/100\n\n" + lead.draft_body)
+                    "Model score: " + str(lead.fit_score) + "/100\n\n" + sales_pitch(campaign, lead))
             try:
                 checkpointed(
                     db, campaign_id, key,
@@ -98,3 +101,4 @@ def send_campaign_demo(campaign_id: str) -> dict:
                           details={k: v for k, v in outcome.items() if k != "error"}))
         db.commit()
     return outcome
+

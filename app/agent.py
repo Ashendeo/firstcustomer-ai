@@ -498,7 +498,8 @@ def run_campaign(campaign_id: str):
                     },
                 }
                 lead.draft_subject = analysis["subject"]
-                lead.draft_body = analysis["body"]
+                from .sales_pitch import sales_pitch
+                lead.draft_body = sales_pitch(c, lead)
                 audit(db, c.id, "lead_drafted", lead.id, {
                     "score": lead.fit_score,
                     "rubric": candidate_score["version"],
@@ -573,3 +574,4 @@ def run_campaign(campaign_id: str):
                 audit(db, c.id, "campaign_failed",
                       details={"error_type": type(exc).__name__})
                 db.commit()
+
