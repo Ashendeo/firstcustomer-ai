@@ -1,6 +1,6 @@
 # FirstCustomer AI — FastAPI / Railway / PostgreSQL MVP
 
-A **single FastAPI service** that turns a product description into a researched lead list and human-approved B2B outreach. Uses Crustdata for company/person discovery, OpenAI for search planning and grounded fit assessments, Resend for optional *explicitly approved* emails, and Calendly booking links + signed webhooks for confirmed meetings.
+A **single FastAPI service** that turns a product description into a researched lead list and human-approved B2B outreach. Uses Crustdata for company/person discovery, Qwen-Agent with an open-weight Qwen model for search planning and grounded fit assessments, Resend for optional *explicitly approved* emails, and Calendly booking links + signed webhooks for confirmed meetings.
 
 **Demo mode is offline and fully fictional.** The app is an early-stage single-operator MVP, not a multi-tenant sales automation product. It does not autonomously negotiate replies, verify business emails, or guarantee meetings.
 
@@ -11,7 +11,7 @@ Browser + HTTP Basic authentication
        |
 FastAPI (one Railway web service, one worker)
   |-- Campaign forms / lead approval / admin API
-  |-- agent.py (bounded OpenAI planning + evaluating)
+  |-- agent.py (bounded Qwen-Agent planning + evaluating)
   |-- crustdata.py (current Company & People Search REST APIs)
   |-- integrations.py (approved Resend sends; signed Calendly webhook)
   |-- Postgres (campaigns, leads, audit log, webhook deduplication)
@@ -40,22 +40,24 @@ pip install pytest
 python -m pytest -q
 ```
 
-## Real Crustdata + OpenAI mode
+## Local Qwen model setup on Windows
+
+Install [Ollama](https://ollama.com/download/windows), then in PowerShell run:\n\n```powershell\nollama pull qwen3:4b\nollama list\n```\n\nOllama usually serves its OpenAI-compatible API at `http://localhost:11434/v1`. Qwen-Agent is installed from `requirements.txt` and connects to this server. For the first test use `QWEN_MODEL=qwen3:4b` and `QWEN_MODEL_SERVER=http://localhost:11434/v1` in `.env`. Run `alembic upgrade head` and start FastAPI as before. On memory-constrained Windows machines, choose a smaller supported Qwen model and update both Ollama and `.env`. The generated JSON can be imperfect; failures appear in campaign logs rather than inventing lead data.\n\n## Real Crustdata + Qwen-Agent mode
 
 Set:
 
 ```dotenv
 DEMO_MODE=false
 CRUSTDATA_API_KEY=<secret>
-OPENAI_API_KEY=<secret>
-OPENAI_MODEL=gpt-4.1-mini
+QWEN_MODEL=qwen3:4b
+QWEN_MODEL_SERVER=http://localhost:11434/v1
 MAX_COMPANIES=5
 MAX_PEOPLE_SEARCHES=3
 ```
 
 Run again. Crustdata Company Search returns company records, then Crustdata People Search filters people by current employer domain and title. The LLM constructs a bounded search plan and analyzes supplied records. Optional headcount ranges are enforced as Crustdata structured search filters (premium charges apply). One lead is created per company. A missing decision-maker **stays missing**, rather than being invented. The app deliberately does **not** automatically enrich private emails or guess them from names.
 
-**Important costs:** Crustdata charges credits for returned records and premium field groups. Person Search title and experience fields may be premium. OpenAI charges tokens separately. Hard limits cap records and people searches, but there is no full accounting-budget circuit breaker yet.
+**Important costs:** Crustdata charges credits for returned records and premium field groups. Person Search title and experience fields may be premium. Locally hosted Qwen has no per-token API bill, but consumes local CPU/GPU, RAM and electricity. Hard limits cap records and people searches, but there is no full accounting-budget circuit breaker yet.
 
 ## Optional email sending
 
@@ -96,7 +98,7 @@ The current event log stores the scheduled Calendly event URI, but does not fetc
 
    Change `Postgres` if your database service has a different name. The app converts Railway's Postgres URL to the psycopg 3 driver URI.
 5. Under the FastAPI service **Settings → Networking**, click **Generate Domain**. `GET /health` is its configured health check and queries PostgreSQL.
-6. Visit the generated HTTPS URL. For live mode, set `DEMO_MODE=false` and add Crustdata and OpenAI keys; deploy again.
+6. Visit the generated HTTPS URL. For live mode, set `DEMO_MODE=false`, add your Crustdata key and configure a reachable Qwen model server; deploy again. **Railway does not share your Windows localhost**. Run Ollama on an authenticated private model-serving service and set `QWEN_MODEL_SERVER` to its reachable private address. Do not expose unauthenticated Ollama directly to the internet.
 7. Do not use `--workers > 1` or >1 replicated container with the in-process job engine. Prefer a dedicated durable queue (Cloud Tasks, Dramatiq, or Temporal) before scaling horizontally.
 
 *Railway deploy credentials are not present in this repository, and no deployment is performed automatically.* Hosting, database, API and email expenses are separate.
