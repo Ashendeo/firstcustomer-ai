@@ -139,8 +139,8 @@ def run(campaign_id: str, tasks: BackgroundTasks, csrf: str = Form(...), db: Ses
     c = get_campaign(db, campaign_id)
     if c.status not in ("draft", "failed"):
         raise HTTPException(409, "Campaign has already been started")
-    if not settings.DEMO_MODE and (not settings.CRUSTDATA_API_KEY or not settings.OPENAI_API_KEY):
-        raise HTTPException(422, "Live mode requires CRUSTDATA_API_KEY and OPENAI_API_KEY")
+    if not settings.DEMO_MODE and (not settings.CRUSTDATA_API_KEY or not settings.QWEN_MODEL or not settings.QWEN_MODEL_SERVER):
+        raise HTTPException(422, "Live mode requires CRUSTDATA_API_KEY and QWEN_MODEL/QWEN_MODEL_SERVER")
     # Failed partially-completed discovery may be restarted; no already-sent lead is ever removed.
     prior = db.scalars(select(Lead).where(Lead.campaign_id == c.id)).all()
     if any(l.status not in ("draft",) for l in prior):
