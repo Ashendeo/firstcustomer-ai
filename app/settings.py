@@ -11,6 +11,8 @@ DEMO_MODE = env_bool("DEMO_MODE", "true")
 CRUSTDATA_API_KEY = os.getenv("CRUSTDATA_API_KEY", "")
 CRUSTDATA_INCLUDE_TECHNOGRAPHICS = env_bool("CRUSTDATA_INCLUDE_TECHNOGRAPHICS", "false")
 BRAVE_SEARCH_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY", "")
+# Search-only by default: /person/contact/enrich is not available on every plan.
+CONTACT_LOOKUP_MODE = os.getenv("CONTACT_LOOKUP_MODE", "search").strip().lower()
 QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3:4b")
 QWEN_MODEL_SERVER = os.getenv("QWEN_MODEL_SERVER", "http://localhost:11434/v1")
 QWEN_TIMEOUT_SECONDS = max(15, min(int(os.getenv("QWEN_TIMEOUT_SECONDS", "120")), 600))
