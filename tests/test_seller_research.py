@@ -114,7 +114,6 @@ def test_research_first_generates_grounded_query_and_uses_checkpoints(
     monkeypatch.setattr(research, "Crustdata", FakeCrustdata)
     monkeypatch.setattr(research, "web_search", fake_web)
     monkeypatch.setattr(market_skill, "web_search", fake_web)
-    monkeypatch.setattr(market_skill, "Crustdata", FakeCrustdata)
     monkeypatch.setattr(agent, "llm_json", fake_model)
     with SessionLocal() as db:
         c = db.get(Campaign, campaign_id)
