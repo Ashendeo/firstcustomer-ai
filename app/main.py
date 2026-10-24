@@ -31,7 +31,7 @@ from .outreach import (get_policy, preview_outreach, run_outreach,
                        normalized_email, valid_unsubscribe_signature)
 from .resend_events import handle_resend_event, verify_signature
 from .ranking import ranked_companies
-from .scoring import scorecard_for_display
+from .scoring import scorecard_for_display, score_company
 from .gmail_demo import gmail_demo_address, send_campaign_demo
 from .seller_research import normalize_company_domain
 
@@ -196,6 +196,47 @@ def run(campaign_id: str, tasks: BackgroundTasks, csrf: str = Form(...), db: Ses
     db.commit()
     tasks.add_task(run_campaign, c.id)
     return redirect(f"/campaigns/{c.id}")
+
+
+@app.post("/campaigns/{campaign_id}/rescore")
+def rescore_saved_evidence(
+    campaign_id: str, confirm: str = Form(...),
+    csrf: str = Form(...), db: Session = Depends(get_db),
+    _: str = Depends(authorize),
+):
+    """Recalculate saved draft evidence; no web/LLM/Crustdata requests."""
+    check_csrf(csrf)
+    campaign = get_campaign(db, campaign_id)
+    if confirm != "RESCORE_SAVED_EVIDENCE":
+        raise HTTPException(422, "Explicit score recalculation confirmation required")
+    policy = get_policy(db, campaign.id)
+    if policy.mode == "live" or campaign.status == "running":
+        raise HTTPException(409, "Pause live outreach and finish discovery before rescoring")
+    leads = db.scalars(select(Lead).where(Lead.campaign_id == campaign_id)).all()
+    changed = 0
+    for lead in leads:
+        if lead.status != "draft":
+            continue  # Never silently alter already-authorized or sent outreach.
+        evidence = lead.evidence or {}
+        company = evidence.get("company_record") or {}
+        person = evidence.get("person_record") or {}
+        if not company:
+            continue
+        card = score_company(campaign, company, person)
+        previous = lead.fit_score
+        if previous == card["total"] and evidence.get("scorecard", {}).get("version") == "scorecard-v2":
+            continue
+        lead.fit_score = card["total"]
+        lead.fit_reason = card["summary"]
+        lead.evidence = {**evidence,
+                         "previous_score": previous,
+                         "scorecard": card}
+        changed += 1
+    audit(db, campaign_id, "saved_evidence_rescored",
+          details={"leads_updated": changed, "provider_calls": 0,
+                   "rubric": "scorecard-v2"})
+    db.commit()
+    return redirect(f"/campaigns/{campaign_id}")
 
 
 @app.post("/campaigns/{campaign_id}/checkpoints/retry")
