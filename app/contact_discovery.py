@@ -25,8 +25,9 @@ def verified_business_email_from_search(person: dict, domain: str) -> str:
     domain = domain.lower().removeprefix("www.")
     sources = []
     contact = person.get("contact") or {}
-    sources.extend(contact.get("business_emails") or [])
-    sources.extend(person.get("business_emails") or [])
+    for group in (contact.get("business_emails") or [], person.get("business_emails") or []):
+        if isinstance(group, list):
+            sources.extend(group)
     for employer in person.get("current_employers") or []:
         if not isinstance(employer, dict):
             continue
