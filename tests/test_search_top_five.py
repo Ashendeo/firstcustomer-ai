@@ -86,7 +86,7 @@ def test_campaign_retains_scores_search_order_and_paid_checkpoints():
             c = db.get(Campaign, cid)
             assert c.status == 'ready', c.error
             leads = db.scalars(select(Lead)).all()
-            assert {x.domain for x in leads} == {'company1.com', 'company3.com', 'company4.com', 'company5.com'}
+            assert {x.domain for x in leads if x.email} == {'company1.com', 'company3.com', 'company4.com', 'company5.com'}\n            assert any(x.domain == 'company2.com' and x.status == 'needs_email_verification' for x in leads)
             assert all(x.fit_score is not None for x in leads)
             event = db.scalar(select(AuditEvent).where(AuditEvent.action == 'candidate_final_ranking'))
             assert [x['provider_rank'] for x in event.details['candidates']] == list(range(1, 8))
