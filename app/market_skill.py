@@ -89,6 +89,12 @@ def validated_buying_committee(category: str, value, fallback=None) -> list[dict
             seen.add(role.casefold())
         if len(accepted) == 4:
             break
+    # A generic Qwen answer must never override a more specific product
+    # hypothesis. In low-evidence cases, prefer no roles to a falsely precise
+    # COO / Operations / IT trio.
+    generic = {x["role"].casefold() for x in BUYING_COMMITTEES["general_b2b"]}
+    if accepted and {x["role"].casefold() for x in accepted}.issubset(generic):
+        return [dict(item) for item in defaults]
     return accepted if len(accepted) >= 2 else [dict(item) for item in defaults]
 
 
