@@ -78,8 +78,8 @@ def send_campaign_demo(campaign_id: str) -> dict:
                 outcome["already_checkpointed"] += 1
                 continue
             # A changed draft / previous uncertain call cannot silently send again.
-            subject = "[FirstCustomer DEMO] " + lead.company_name + " â€” " + lead.draft_subject
-            body = ("SANDBOX EMAIL â€” NOT SENT TO ANY PROSPECT\n"
+            subject = "[FirstCustomer DEMO] " + lead.company_name + " - " + lead.draft_subject
+            body = ("SANDBOX EMAIL - NOT SENT TO ANY PROSPECT\n"
                     "Original target: " + lead.company_name + "\n"
                     "Model score: " + str(lead.fit_score) + "/100\n\n" + sales_pitch(campaign, lead))
             try:
