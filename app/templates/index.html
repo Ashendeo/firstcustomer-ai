@@ -7,29 +7,119 @@
 {% if demo %}<div class="notice">DEMO MODE: All displayed prospects are fictional. No paid company enrichment, web-search or outbound email calls are made.</div>{% endif %}
 <div class="columns">
   <section class="panel">
-    <h2>Create a campaign</h2><p class="hint">Provide your company website and a starting ICP. The agent researches the business before generating a targeting query.</p>
-    <form action="/campaigns" method="post">
+    <h2>Create a campaign</h2>
+    <p class="hint">Start with your company name. Select the correct Crustdata match, then review and edit the proposed business information before discovery.</p>
+    <form action="/campaigns" method="post" id="create-campaign">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <label>Campaign name<input required minlength="3" maxlength="140" name="name" value="Sports analytics pilots"></label>
-      <label>Your company name<input name="seller_name" maxlength="200" placeholder="e.g. Acme Sports Technologies"></label>
-      <label>Your company website / domain<input name="seller_domain" maxlength="180" placeholder="e.g. acme.com" {% if not demo %}required{% endif %}></label>
-      <p class="hint">On discovery, the agent will research your business using Crustdata Company Enrichment and Brave web search (requires API credentials), then use that evidence to plan targeting. Research calls are checkpointed.</p>
-      <label>Your product<textarea required minlength="10" name="product" rows="3">An AI video analytics platform that turns corporate football matches into highlights and player statistics.</textarea></label>
-      <label>Ideal customers<textarea required minlength="10" name="ideal_customer" rows="3">Technology and services companies with 500–5000 employees that may organize corporate sports or wellness activities.</textarea></label>
-      <div class="two">
-        <label>Country<input name="country" value="India"></label>
-        <label>Buyer titles (comma-separated)<input name="buyer_titles" value="Head of HR,HR Director,Employee Engagement"></label>
-      </div>
-      <div class="two">
-        <label>Minimum annual revenue USD (optional)<input name="min_revenue_usd" type="number" min="0" step="1000000" value="0"></label>
-        <label>Maximum annual revenue USD (optional)<input name="max_revenue_usd" type="number" min="0" step="1000000" value="0"></label>
-      </div>
-      <p class="hint">Revenue ranges are evaluated from estimated annual USD revenue returned by company enrichment; unavailable revenue receives no scale-fit credit.</p>
-      <label>Calendly event URL (optional)<input name="booking_url" type="url" placeholder="https://calendly.com/your-team/15min"></label>
-      <input type="hidden" name="start_discovery" value="true">
-      <p class="hint">Submitting starts the research workflow immediately. Live mode may incur Crustdata company-enrichment and Brave web-search charges; completed calls are checkpointed.</p>
-      <button class="primary" type="submit">Create &amp; research campaign <span>→</span></button>
+      <label>Your company name
+        <input name="seller_name" id="seller-name" required maxlength="200" placeholder="e.g. Acme Technologies">
+      </label>
+      <button type="button" id="lookup-button" class="secondary" {% if demo %}disabled{% endif %}>Find company on Crustdata</button>
+      <p id="lookup-status" class="hint" aria-live="polite">{% if demo %}Company lookup is disabled in fictional demo mode.{% else %}One paid company search per unique name; results are cached globally.{% endif %}</p>
+      <label id="matches-container" hidden>Which company is yours?
+        <select id="company-matches" aria-label="Select verified company identity"></select>
+      </label>
+      <section id="company-details" hidden>
+        <label>Company website / domain
+          <input name="seller_domain" id="seller-domain" maxlength="180" placeholder="company.com" {% if not demo %}required{% endif %}>
+        </label>
+        <label>Your product / business description
+          <textarea required minlength="10" maxlength="2000" name="product" id="seller-product" rows="3"></textarea>
+        </label>
+        <label>Ideal customer and problem to solve
+          <textarea required minlength="10" maxlength="2000" name="ideal_customer" id="seller-icp" rows="3"></textarea>
+        </label>
+        <details><summary>Advanced targeting (editable)</summary>
+          <label>Buyer titles inferred from product/problem
+            <input name="buyer_titles" id="seller-buyers" maxlength="250" placeholder="Inferred automatically by the market skill">
+          </label>
+          <label>Country<input name="country" value="India"></label>
+          <div class="two">
+            <label>Minimum annual revenue (USD, optional)<input name="min_revenue_usd" type="number" min="0" step="1000000" value="0"></label>
+            <label>Maximum annual revenue (USD, optional)<input name="max_revenue_usd" type="number" min="0" step="1000000" value="0"></label>
+          </div>
+          <label>Calendly event URL (optional)<input name="booking_url" type="url" placeholder="https://calendly.com/your-team/15min"></label>
+        </details>
+        <label>Campaign name<input required minlength="3" maxlength="140" name="name" id="campaign-name" placeholder="B2B customer discovery"></label>
+        <input type="hidden" name="start_discovery" value="true">
+        <p class="hint">The prefilled business summary and buyer criteria are hypotheses based on Crustdata company details. Verify or edit them before launching. Starting the research campaign may incur extra API credits.</p>
+        <button class="primary" type="submit">Create &amp; research campaign <span>→</span></button>
+      </section>
     </form>
+    <script>
+    (() => {
+      const btn = document.getElementById('lookup-button');
+      const name = document.getElementById('seller-name');
+      const select = document.getElementById('company-matches');
+      const wrap = document.getElementById('matches-container');
+      const details = document.getElementById('company-details');
+      const status = document.getElementById('lookup-status');
+      const form = document.getElementById('create-campaign');
+      let options = [];
+      const assign = (id, value) => {
+        const el = document.getElementById(id);
+        el.value = String(value || '');
+      };
+      const choose = (index) => {
+        const option = options[Number(index)];
+        if (!option) return;
+        assign('seller-name', option.seller_name);
+        assign('seller-domain', option.seller_domain);
+        assign('seller-product', option.product);
+        assign('seller-icp', option.ideal_customer);
+        assign('seller-buyers', option.buyer_titles);
+        assign('campaign-name', option.seller_name + ' — customer discovery');
+        details.hidden = false;
+        status.textContent = 'Prefilled from Crustdata. Review all fields before creating the campaign.';
+      };
+      btn.addEventListener('click', async () => {
+        const company = name.value.trim();
+        if (company.length < 3) { status.textContent = 'Enter at least 3 characters.'; return; }
+        btn.disabled = true;
+        status.textContent = 'Looking up company identity…';
+        wrap.hidden = true;
+        details.hidden = true;
+        try {
+          const body = new FormData();
+          body.set('company_name', company);
+          body.set('csrf', form.elements.namedItem('csrf').value);
+          const response = await fetch('/company-lookup', {
+            method: 'POST', body, credentials: 'same-origin'
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.detail || 'Lookup failed');
+          options = Array.isArray(data.candidates) ? data.candidates : [];
+          if (!options.length) {
+            status.textContent = 'No exact company matches. Check the name; no campaign was created.';
+            return;
+          }
+          select.replaceChildren();
+          options.forEach((option, i) => {
+            const el = document.createElement('option');
+            el.value = String(i);
+            el.textContent = option.seller_name + ' (' + option.seller_domain + ')';
+            select.appendChild(el);
+          });
+          wrap.hidden = false;
+          choose(0);
+          status.textContent = 'Choose the right business from the list; the fields are editable.';
+        } catch (error) { status.textContent = String(error.message || error); }
+        finally { btn.disabled = false; }
+      });
+      select.addEventListener('change', () => choose(select.value));
+      name.addEventListener('input', () => { wrap.hidden = true; details.hidden = true; });
+      if ({{ 'true' if demo else 'false' }}) {
+        btn.disabled = true;
+        details.hidden = false;
+        assign('seller-name', 'Demo Company');
+        assign('seller-domain', 'demo.example');
+        assign('seller-product', 'Fictional sports video analysis for business leagues');
+        assign('seller-icp', 'Organizations that host employee sports leagues');
+        assign('seller-buyers', 'Head of HR, Employee Engagement Manager');
+        assign('campaign-name', 'Sports analytics pilots');
+      }
+    })();
+    </script>
   </section>
   <section class="panel">
     <div class="between"><h2>Recent campaigns</h2><span class="muted">{{ campaigns|length }} total</span></div>
