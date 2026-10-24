@@ -31,8 +31,10 @@
         </label>
         <details><summary>Advanced targeting (editable)</summary>
           <label>Buyer titles inferred from product/problem
-            <input name="buyer_titles" id="seller-buyers" maxlength="250" placeholder="Inferred automatically by the market skill">
+            <input name="buyer_titles" id="seller-buyers" maxlength="250" placeholder="Identified from product/problem; editable">
           </label>
+          <button class="secondary" type="button" id="rethink-buyers">Re-evaluate buyer roles from my edits (free)</button>
+          <p id="buyer-role-explanation" class="hint" aria-live="polite">Roles are hypotheses. Refine your product or customer problem to improve them.</p>
           <label>Country<input name="country" value="India"></label>
           <div class="two">
             <label>Minimum annual revenue (USD, optional)<input name="min_revenue_usd" type="number" min="0" step="1000000" value="0"></label>
@@ -68,6 +70,12 @@
         assign('seller-product', option.product);
         assign('seller-icp', option.ideal_customer);
         assign('seller-buyers', option.buyer_titles);
+        const explanation = document.getElementById('buyer-role-explanation');
+        explanation.textContent = option.buyer_role_confidence === 'insufficient_evidence'
+          ? 'Insufficient evidence to infer buyers. Explain the customer problem, then re-evaluate roles.'
+          : ('Buyer hypothesis: ' + (option.buyer_problem_domain || 'unclassified')
+            + '. Evidence: ' + (option.buyer_role_evidence || []).join(', ')
+            + '. You can edit these titles.');
         assign('campaign-name', option.seller_name + ' — customer discovery');
         details.hidden = false;
         status.textContent = 'Prefilled from Crustdata. Review all fields before creating the campaign.';
@@ -105,6 +113,28 @@
           status.textContent = 'Choose the right business from the list; the fields are editable.';
         } catch (error) { status.textContent = String(error.message || error); }
         finally { btn.disabled = false; }
+      });
+      document.getElementById('rethink-buyers').addEventListener('click', async () => {
+        const button = document.getElementById('rethink-buyers');
+        const explanation = document.getElementById('buyer-role-explanation');
+        button.disabled = true;
+        explanation.textContent = 'Evaluating your product and customer problem locally…';
+        try {
+          const payload = new FormData();
+          payload.set('product', document.getElementById('seller-product').value);
+          payload.set('ideal_customer', document.getElementById('seller-icp').value);
+          payload.set('csrf', form.elements.namedItem('csrf').value);
+          const response = await fetch('/buyer-roles/suggest', {
+            method: 'POST', body: payload, credentials: 'same-origin'
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.detail || 'Cannot infer buyer roles');
+          assign('seller-buyers', result.titles);
+          explanation.textContent = result.reason + '. ' +
+            (result.evidence.length ? 'Supporting terms: ' + result.evidence.join(', ') : 'No specific buying problem observed.') +
+            '. Modify the roles if needed.';
+        } catch (err) { explanation.textContent = String(err.message || err); }
+        finally { button.disabled = false; }
       });
       select.addEventListener('change', () => choose(select.value));
       name.addEventListener('input', () => { wrap.hidden = true; details.hidden = true; });
