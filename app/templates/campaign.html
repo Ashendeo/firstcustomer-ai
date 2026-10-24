@@ -45,8 +45,13 @@
   <div class="notice">{{ ranking_summary.legacy_disappeared }} candidates appeared in Stage 1 but not Stage 2 in this older run. The previous implementation could silently drop companies with missing identities or domains. The fix applies to new execution runs; viewing this report does not repeat paid API calls.</div>
   {% endif %}
   {% endif %}
-  {% if ranking_summary.company_search_results is defined and ranking_summary.company_search_results < 100 and not demo %}
-  <p class="hint">Stage 1 target: 100 companies. Crustdata returned {{ ranking_summary.company_search_results }} for this search; the ranking cannot invent additional results. Review search constraints and API response if fewer than expected.</p>
+  {% if ranking_summary.company_search_results is defined and not demo %}
+  {% set requested = ranking_summary.company_search_requested|default(100) %}
+  {% if ranking_summary.company_search_results < requested %}
+  <div class="notice">Stage 1 requested {{ requested }} companies, but Crustdata returned {{ ranking_summary.company_search_results }}. No candidates were removed by the ranking step. Check the company search query, country filter and API response in Execution Trace. Previously completed searches are checkpointed and will not be silently repeated.</div>
+  {% else %}
+  <p class="hint">Stage 1 company discovery fulfilled its target of {{ requested }} candidates.</p>
+  {% endif %}
   {% endif %}
   {% if ranking_summary.search_empty %}
   <div class="notice">Crustdata Company Search returned zero candidates. Ranking did not filter anything. Check the generated search query and geographic filter in Execution Trace; changing the query requires a new search, which may incur an API charge.</div>
@@ -60,7 +65,7 @@
   {% set stage2 = ranking_events.candidate_enriched_ranking or {} %}
   {% set final = ranking_events.candidate_final_ranking or {} %}
   {% if stage1.candidates %}
-  <details><summary>Stage 1 &mdash; Crustdata search order + evidence scores ({{ stage1.candidates|length }} companies)</summary>
+  <details open><summary>Stage 1 &mdash; Crustdata search order + evidence scores ({{ stage1.candidates|length }} companies)</summary>
     <div class="table-scroll"><table><thead><tr><th>Priority</th><th>Company</th><th>Crustdata rank</th><th>Early score</th><th>Priority index</th></tr></thead><tbody>
     {% for item in stage1.candidates %}<tr>
       <td>#{{ item.priority_rank }}</td><td>{{ item.company }}</td><td>#{{ item.provider_rank }}</td>
