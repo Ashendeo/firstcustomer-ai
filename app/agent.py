@@ -16,7 +16,7 @@ from .market_skill import get_market_playbook, prioritize_contacts, contact_role
 from .market_scoring import score_market_fit
 from .candidate_ranking import prioritize_companies, report_priorities, OUTREACH_TOP_N
 from .outreach import choose_verified_email
-from .contact_discovery import discover_contact
+from .contact_discovery import discover_contact, company_people_profiles
 
 logger = logging.getLogger(__name__)
 
@@ -401,6 +401,18 @@ def run_campaign(campaign_id: str):
                     })
                     db.commit()
 
+                # Company Enrichment already includes decision-makers/founders.
+                # Reuse them before attempting additional People Search calls.
+                company_contacts = company_people_profiles(company, domain)
+                existing_profiles = {
+                    str((p.get("basic_profile") or {}).get("name") or "").casefold()
+                    for p in people
+                }
+                for candidate in company_contacts:
+                    candidate_name = str((candidate.get("basic_profile") or {}).get("name") or "").casefold()
+                    if candidate_name and candidate_name not in existing_profiles:
+                        people.append(candidate)
+                        existing_profiles.add(candidate_name)
                 contact = None
                 if settings.DEMO_MODE:
                     if skill and people:
