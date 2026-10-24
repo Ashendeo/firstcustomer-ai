@@ -1,12 +1,14 @@
 """Bounded, explainable orchestration: LLM decides query and fit, Python owns actions."""
 import json
 import logging
+import hashlib
 from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
 from sqlalchemy import select
 from . import settings
 from .crustdata import Crustdata
 from .db import SessionLocal
 from .models import Campaign, Lead, AuditEvent
+from .checkpoints import checkpointed, fingerprint, CheckpointNeedsReview
 
 logger = logging.getLogger(__name__)
 
@@ -89,59 +91,134 @@ def audit(db, campaign_id: str, action: str, lead_id: str = "", details=None):
 
 
 def run_campaign(campaign_id: str):
-    """Runs after HTTP response. Intentionally bounded; not a durable job queue."""
+    """Resume at the earliest unfinished checkpoint; never erase prior leads."""
     with SessionLocal() as db:
         c = db.get(Campaign, campaign_id)
         if not c or c.status != "running":
             return
         try:
-            plan = make_plan(c)
+            config = {
+                "demo": settings.DEMO_MODE,
+                "model": settings.QWEN_MODEL,
+                "model_server_hash": hashlib.sha256(
+                    settings.QWEN_MODEL_SERVER.encode("utf-8")
+                ).hexdigest(),
+            }
+            plan = checkpointed(
+                db, c.id, "plan",
+                {**config, "revision": "plan-v1", "product": c.product,
+                 "ideal_customer": c.ideal_customer, "country": c.country,
+                 "buyer_titles": c.buyer_titles, "min": c.min_headcount,
+                 "max": c.max_headcount},
+                lambda: make_plan(c),
+            )
             c.search_query = plan["query"]
             db.commit()
             api = None if settings.DEMO_MODE else Crustdata()
-            companies = DEMO_COMPANIES[:settings.MAX_COMPANIES] if settings.DEMO_MODE else api.company_search(plan["query"], c.country, settings.MAX_COMPANIES, c.min_headcount, c.max_headcount)
-            audit(db, c.id, "company_search", details={"result_count": len(companies), "demo": settings.DEMO_MODE})
+            companies = checkpointed(
+                db, c.id, "company_search",
+                {"revision": "company-search-v1", "demo": settings.DEMO_MODE,
+                 "query": plan["query"], "country": c.country,
+                 "min_headcount": c.min_headcount, "max_headcount": c.max_headcount,
+                 "limit": settings.MAX_COMPANIES},
+                lambda: (DEMO_COMPANIES[:settings.MAX_COMPANIES]
+                         if settings.DEMO_MODE else api.company_search(
+                             plan["query"], c.country, settings.MAX_COMPANIES,
+                             c.min_headcount, c.max_headcount)),
+            )
+            audit(db, c.id, "company_search_available", details={
+                "result_count": len(companies), "demo": settings.DEMO_MODE,
+            })
             db.commit()
             seen = set()
             for i, company in enumerate(companies):
                 info = company.get("basic_info") or {}
                 company_name = str(info.get("name") or "")[:200]
                 domain = str(info.get("primary_domain") or "")[:180]
-                if not company_name or (domain and domain in seen):
+                company_id = str(company.get("crustdata_company_id") or "")[:80]
+                if not company_name:
                     continue
-                if domain:
-                    seen.add(domain)
+                identity = (domain.lower() or company_id or company_name.lower())
+                discovery_key = fingerprint({"identity": identity})
+                if discovery_key in seen:
+                    continue
+                seen.add(discovery_key)
+
+                # Existing leads are never deleted, re-created, or redrafted
+                # if already completed, manually edited, approved, or sent.
+                prior_leads = db.scalars(
+                    select(Lead).where(Lead.campaign_id == c.id)
+                ).all()
+                lead = next((l for l in prior_leads if (
+                    l.discovery_key == discovery_key or
+                    (l.discovery_key is None and (
+                        (domain and l.domain.lower() == domain.lower()) or
+                        (company_id and l.company_id == company_id)
+                    ))
+                )), None)
+                if lead and (lead.draft_body or lead.status != "draft"):
+                    continue
+
                 people = []
                 if i < settings.MAX_PEOPLE_SEARCHES:
-                    if settings.DEMO_MODE:
-                        people = [DEMO_PEOPLE[i % len(DEMO_PEOPLE)]]
-                    elif domain:
-                        people = api.people_search(domain, plan["titles"], limit=2)
+                    if settings.DEMO_MODE or domain:
+                        people = checkpointed(
+                            db, c.id, f"people:{discovery_key[:32]}",
+                            {"revision": "people-search-v1",
+                             "demo": settings.DEMO_MODE, "domain": domain,
+                             "titles": plan["titles"], "limit": 2},
+                            lambda: ([DEMO_PEOPLE[i % len(DEMO_PEOPLE)]]
+                                     if settings.DEMO_MODE else
+                                     api.people_search(domain, plan["titles"], limit=2)),
+                        )
                 person = people[0] if people else None
                 profile = (person or {}).get("basic_profile") or {}
-                roles = (((person or {}).get("experience") or {}).get("employment_details") or {}).get("current") or []
+                roles = (((person or {}).get("experience") or {})
+                         .get("employment_details") or {}).get("current") or []
                 title = str((roles[0] if roles else {}).get("title") or "")[:180]
-                social = ((person or {}).get("social_handles") or {}).get("professional_network_identifier") or {}
-                lead = Lead(
-                    campaign_id=c.id, company_id=str(company.get("crustdata_company_id") or ""),
-                    company_name=company_name, domain=domain, description=str(info.get("description") or "")[:2000],
-                    person_id=str((person or {}).get("crustdata_person_id") or ""),
-                    person_name=str(profile.get("name") or "")[:160], person_title=title,
-                    person_profile=str(social.get("profile_url") or "")[:1500],
-                    source="demo" if settings.DEMO_MODE else "crustdata",
-                    evidence={"company_record": company, "person_record": person or {}, "provider": "DEMO" if settings.DEMO_MODE else "Crustdata"},
-                )
-                db.add(lead)
-                db.flush()  # lead id available for booking tracking
+                social = ((person or {}).get("social_handles") or {}).get(
+                    "professional_network_identifier") or {}
+                if lead is None:
+                    lead = Lead(
+                        campaign_id=c.id, discovery_key=discovery_key,
+                        company_id=company_id, company_name=company_name,
+                        domain=domain,
+                        description=str(info.get("description") or "")[:2000],
+                        source="demo" if settings.DEMO_MODE else "crustdata",
+                    )
+                    db.add(lead)
+                    db.flush()
+                else:
+                    lead.discovery_key = discovery_key
+                lead.person_id = str((person or {}).get("crustdata_person_id") or "")[:80]
+                lead.person_name = str(profile.get("name") or "")[:160]
+                lead.person_title = title
+                lead.person_profile = str(social.get("profile_url") or "")[:1500]
+                lead.evidence = {
+                    "company_record": company, "person_record": person or {},
+                    "provider": "DEMO" if settings.DEMO_MODE else "Crustdata",
+                }
+                db.commit()  # stable lead ID exists BEFORE any model call
+
                 link = safe_booking_link(c.booking_url, c.id, lead.id)
-                analysis = evaluate(c, company, person, link)
+                analysis = checkpointed(
+                    db, c.id, f"evaluation:{discovery_key[:32]}",
+                    {**config, "revision": "evaluation-v1", "product": c.product,
+                     "ideal_customer": c.ideal_customer, "company": company,
+                     "person": person, "booking_link": link},
+                    lambda: evaluate(c, company, person, link),
+                )
                 lead.fit_score = analysis["fit_score"]
                 lead.fit_reason = analysis["fit_reason"]
                 lead.draft_subject = analysis["subject"]
                 lead.draft_body = analysis["body"]
-                audit(db, c.id, "lead_drafted", lead.id, {"score": lead.fit_score, "source": lead.source})
+                audit(db, c.id, "lead_drafted", lead.id, {
+                    "score": lead.fit_score, "source": lead.source,
+                })
                 db.commit()
+
             c.status = "ready"
+            c.error = ""
             audit(db, c.id, "campaign_complete", details={"demo": settings.DEMO_MODE})
             db.commit()
         except Exception as exc:
@@ -150,6 +227,12 @@ def run_campaign(campaign_id: str):
             c = db.get(Campaign, campaign_id)
             if c:
                 c.status = "failed"
-                c.error = f"Campaign failed: {type(exc).__name__}. Review server logs and API account permissions."
-                audit(db, c.id, "campaign_failed", details={"error_type": type(exc).__name__})
+                if isinstance(exc, CheckpointNeedsReview):
+                    c.error = str(exc)[:500]
+                else:
+                    c.error = (f"Campaign failed: {type(exc).__name__}. "
+                               "Completed checkpoints were preserved. Inspect logs and "
+                               "review uncertain steps before retrying.")
+                audit(db, c.id, "campaign_failed",
+                      details={"error_type": type(exc).__name__})
                 db.commit()

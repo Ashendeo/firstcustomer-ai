@@ -5,8 +5,9 @@
 <div class="between headline"><div><div class="eyebrow">CAMPAIGN DETAIL</div><h1>{{ campaign.name }}</h1><p class="subtitle">{{ campaign.ideal_customer }}</p></div><span class="pill {{ 'success' if campaign.status == 'ready' else 'warn' if campaign.status == 'failed' else 'neutral' }}">{{ campaign.status }}</span></div>
 {% if campaign.error %}<div class="notice error">{{ campaign.error }}</div>{% endif %}
 {% if campaign.status in ['draft','failed'] %}
-<form action="/campaigns/{{ campaign.id }}/run" method="post" class="action-row"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="primary">{{ 'Run discovery agent' if campaign.status == 'draft' else 'Retry discovery' }} →</button><span class="hint">{% if demo %}Generates a fictional walkthrough.{% else %}Queries live Crustdata and OpenAI; API credits may be charged.{% endif %}</span></form>
+<form action="/campaigns/{{ campaign.id }}/run" method="post" class="action-row"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="primary">{{ 'Run discovery agent' if campaign.status == 'draft' else 'Retry discovery' }} →</button><span class="hint">{% if demo %}Generates a fictional walkthrough.{% else %}Uses Crustdata and local Qwen; completed checkpoints are reused, uncertain calls require approval.{% endif %}</span></form>
 {% elif campaign.status == 'running' %}<div class="notice">Discovery is running. Refresh this page to see new leads. This demo uses an in-process job, so a deployment restart can interrupt it.</div>
+<form action="/campaigns/{{ campaign.id }}/recover-interrupted" method="post" class="action-row"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="confirm" value="PROCESS_STOPPED"><button type="submit">Recover interrupted run</button><span class="hint">Only after restarting the FastAPI process and confirming no prior worker is running.</span></form>
 {% endif %}
 <div class="stats">
   <div class="stat"><div class="statvalue">{{ leads|length }}</div><span>Accounts found</span></div>
@@ -20,6 +21,24 @@
 {% for lead in leads %}<tr><td><strong>{{ lead.company_name }}</strong><div class="small">{{ lead.domain }}</div></td><td>{{ lead.person_name or 'Not found' }}<div class="small">{{ lead.person_title or 'Unknown role' }}</div></td><td><span class="score">{{ lead.fit_score }}</span>/100</td><td><span class="pill {{ 'success' if lead.status == 'booked' else 'neutral' }}">{{ lead.status }}</span></td><td><a href="/leads/{{ lead.id }}" class="subtle-link">Review →</a></td></tr>{% endfor %}
 </tbody></table></div>
 {% else %}<div class="empty">No prospects yet. Run discovery above.</div>{% endif %}
+</section>
+<section class="panel"><h2>Metered-operation checkpoints</h2>
+<p class="muted">Completed results are reused on retry; an uncertain call might already have been billed. Replaying it can incur another charge.</p>
+{% if checkpoints %}
+<div class="table-scroll"><table><thead><tr><th>Step</th><th>State</th><th>Attempts</th><th>Action</th></tr></thead><tbody>
+{% for step in checkpoints %}
+<tr><td><code>{{ step.step_key }}</code></td><td><span class="pill {{ 'success' if step.status == 'complete' else 'warn' }}">{{ step.status }}</span></td><td>{{ step.attempts }}</td><td>
+{% if campaign.status == 'failed' and step.status in ['in_flight','uncertain'] %}
+<form method="post" action="/campaigns/{{ campaign.id }}/checkpoints/retry">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="step_key" value="{{ step.step_key }}">
+<label><input type="checkbox" name="confirm" value="POSSIBLE_DUPLICATE_CHARGE" required> I accept that this request may be charged again.</label>
+<button type="submit">Authorize paid retry</button></form>
+{% else %}—{% endif %}
+</td></tr>
+{% endfor %}
+</tbody></table></div>
+{% else %}<div class="empty">No checkpointed calls yet.</div>{% endif %}
 </section>
 <section class="panel narrow"><h2>Execution history</h2>{% for e in events %}<div class="history"><span class="dot"></span><div><strong>{{ e.action.replace('_',' ')|title }}</strong><div class="small">{{ e.created_at.strftime('%d %b %Y · %H:%M UTC') }}</div></div></div>{% endfor %}</section>
 {% endblock %}
