@@ -226,6 +226,13 @@ checkpoint **before** SMTP dispatch. Successful or uncertain SMTP attempts
 are not repeated automatically. The sender and destination must be exactly
 the same Gmail address; if they differ, sending is disabled.
 
+**When the private Gmail sandbox is configured, normal Resend sends (both
+manual and autonomous live outreach) are blocked.** This prevents a demo
+from accidentally contacting real prospects. To resume production Resend
+outreach, remove the `GMAIL_DEMO_*` settings, restart FastAPI, and verify
+the campaign's live policy separately.
+
+
 ## Optional email sending
 
 Configure a domain with [Resend](https://resend.com/docs) and set:
