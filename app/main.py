@@ -116,8 +116,8 @@ def create_campaign(
     ideal_customer: str = Form(min_length=10, max_length=2000),
     country: str = Form(default="India", max_length=60),
     buyer_titles: str = Form(default="Head of HR,HR Director", max_length=250),
-    min_headcount: int = Form(default=0, ge=0, le=10000000),
-    max_headcount: int = Form(default=0, ge=0, le=10000000),
+    min_revenue_usd: int = Form(default=0, ge=0, le=100000000000000),
+    max_revenue_usd: int = Form(default=0, ge=0, le=100000000000000),
     booking_url: str = Form(default="", max_length=500),
     start_discovery: bool = Form(default=False),
     csrf: str = Form(...),
@@ -129,8 +129,8 @@ def create_campaign(
         u = urlsplit(booking_url)
         if u.scheme != "https" or not (u.hostname == "calendly.com" or (u.hostname or "").endswith(".calendly.com")):
             raise HTTPException(422, "Booking link must be a valid HTTPS Calendly URL")
-    if min_headcount and max_headcount and min_headcount > max_headcount:
-        raise HTTPException(422, "Minimum headcount cannot exceed maximum")
+    if min_revenue_usd and max_revenue_usd and min_revenue_usd > max_revenue_usd:
+        raise HTTPException(422, "Minimum revenue cannot exceed maximum revenue")
     if start_discovery and not settings.DEMO_MODE and (
             not settings.CRUSTDATA_API_KEY or not settings.QWEN_MODEL_SERVER):
         raise HTTPException(422, "Live seller research requires Crustdata credentials and a local Qwen model")
@@ -142,7 +142,8 @@ def create_campaign(
     c = Campaign(name=name.strip(), seller_name=seller_name.strip(), seller_domain=clean_domain,
                  product=product.strip(), ideal_customer=ideal_customer.strip(),
                  country=country.strip(), buyer_titles=buyer_titles.strip(),
-                 min_headcount=min_headcount, max_headcount=max_headcount, booking_url=booking_url.strip())
+                 min_revenue_usd=min_revenue_usd, max_revenue_usd=max_revenue_usd,
+                 booking_url=booking_url.strip())
     db.add(c)
     db.flush()
     audit(db, c.id, "campaign_created", details={"demo": settings.DEMO_MODE})
@@ -298,7 +299,7 @@ def recover_interrupted(
 @app.post("/campaigns/{campaign_id}/outreach/policy")
 def configure_outreach(
     campaign_id: str,
-    min_score: int = Form(default=85),
+    min_score: int = Form(default=75),
     daily_limit: int = Form(default=10),
     auto_send: bool = Form(default=False),
     legal_basis: str = Form(default=""),
@@ -319,7 +320,7 @@ def configure_outreach(
         raise HTTPException(422, "Unsupported legal basis")
     if organization_type not in ("", "corporation", "individual"):
         raise HTTPException(422, "Unsupported organization type")
-    policy.min_score = max(85, min(min_score, 100))
+    policy.min_score = max(75, min(min_score, 100))
     policy.daily_limit = max(1, min(daily_limit, 10))
     policy.auto_send = auto_send
     policy.prepare_linkedin_drafts = False
