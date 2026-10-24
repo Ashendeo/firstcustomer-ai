@@ -218,3 +218,16 @@ def test_inbound_classification():
     assert classify_reply("Please remove me from your list") == "opt_out"
     assert classify_reply("Let's talk next week") == "interested"
     assert classify_reply("Thanks for the note") == "needs_review"
+
+
+def test_scheduler_requires_secret_and_ignores_simulation(client, monkeypatch):
+    campaign_id = campaign_with_leads()
+    monkeypatch.setattr(settings, "OUTREACH_CRON_SECRET", "a-very-long-test-cron-secret-123")
+    assert client.post("/outreach/tick").status_code == 401
+    good = client.post("/outreach/tick", headers={
+        "x-outreach-cron-secret": "a-very-long-test-cron-secret-123"
+    })
+    assert good.status_code == 200
+    assert good.json() == {"status": "scheduled", "campaigns": 0}
+    with SessionLocal() as db:
+        assert db.get(OutreachPolicy, campaign_id) is None
