@@ -76,7 +76,11 @@ def discover_contact(db, campaign_id: str, domain: str, discovery_key: str,
     attempted_urls = set()
     chosen = None
     email = ""
-    primary = prioritize_contacts(primary_people, skill) if skill else list(primary_people)
+    def order_contacts(group):
+        ranked = prioritize_contacts(group, skill) if skill else list(group)
+        return sorted(ranked, key=lambda p: not bool(
+            (p.get("contact") or {}).get("has_business_email")))
+    primary = order_contacts(primary_people)
 
     def check_group(group: list[dict], phase: str):
         nonlocal chosen, email
@@ -138,30 +142,50 @@ def discover_contact(db, campaign_id: str, domain: str, discovery_key: str,
                 break
 
     check_group(primary, "title_filtered")
+
     secondary = []
-    if (not chosen and not settings.DEMO_MODE and
-            fallback_budget["used"] < settings.MAX_PEOPLE_FALLBACK_SEARCHES and
-            contact_budget["used"] < settings.MAX_CONTACT_ENRICHMENTS):
-        key = "people_fallback:" + discovery_key[:32]
+    # Verified current-employer email index first; employer-wide discovery
+    # second. Both use domain hard constraints and independent checkpoints.
+    for phase, prefix, verified_only in [
+        ("verified_employee_fallback", "people_verified_fallback:", True),
+        ("employer_only_fallback", "people_fallback:", False),
+    ]:
+        if chosen or settings.DEMO_MODE:
+            break
+        key = prefix + discovery_key[:32]
         old = get_checkpoint(db, campaign_id, key)
         cached = bool(old and old.status == "complete")
+        if (not cached and
+                (fallback_budget["used"] >= settings.MAX_PEOPLE_FALLBACK_SEARCHES
+                 or contact_budget["used"] >= settings.MAX_CONTACT_ENRICHMENTS)):
+            break
         if not cached:
             fallback_budget["used"] += 1
-        secondary = checkpointed(
-            db, campaign_id, key,
-            {"revision": "people-fallback-v1", "domain": domain,
-             "titles": [], "limit": settings.PEOPLE_FALLBACK_RESULTS},
-            lambda: api.people_search(domain, [], limit=settings.PEOPLE_FALLBACK_RESULTS),
-        )
-        request = RequestBuilder.people_search_request(
+        request = (RequestBuilder.people_search_verified_request(
             domain, [], limit=settings.PEOPLE_FALLBACK_RESULTS)
+            if verified_only else RequestBuilder.people_search_request(
+                domain, [], limit=settings.PEOPLE_FALLBACK_RESULTS))
+        def search():
+            if verified_only:
+                return api.people_search_verified(
+                    domain, [], limit=settings.PEOPLE_FALLBACK_RESULTS)
+            return api.people_search(
+                domain, [], limit=settings.PEOPLE_FALLBACK_RESULTS)
+        records = checkpointed(
+            db, campaign_id, key,
+            {"revision": "people-verified-fallback-v1" if verified_only else "people-fallback-v1",
+             "domain": domain, "titles": [], "limit": settings.PEOPLE_FALLBACK_RESULTS,
+             **({"email_verified": True} if verified_only else {})},
+            search,
+        )
         audit(db, campaign_id, "crustdata_people_fallback", details={
-            **search_trace("/person/search", request, secondary, cached),
-            "domain": domain, "reason": "No verified contact in title-filtered results",
+            **search_trace("/person/search", request, records, cached),
+            "domain": domain, "phase": phase,
+            "reason": "No deliverable business email from earlier candidate tier",
         })
         db.commit()
-        expanded = prioritize_contacts(secondary, skill) if skill else list(secondary)
-        check_group(expanded, "current_employer_fallback")
+        secondary.extend(records)
+        check_group(order_contacts(records), phase)
 
     candidates = sorted(examined, key=lambda x: (-x["match"], x["name"].lower()))
     return {
