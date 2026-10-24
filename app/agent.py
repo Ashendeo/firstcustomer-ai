@@ -324,6 +324,30 @@ def run_campaign(campaign_id: str):
             })
             db.commit()
 
+            people_jobs = []
+            people_was_cached = {}
+            for index, item in enumerate(enriched_candidates):
+                if index >= settings.MAX_PEOPLE_SEARCHES or item["contact_block_reason"]:
+                    continue
+                domain = str((item["company"].get("basic_info") or {}).get("primary_domain") or "").lower().removeprefix("www.")[:180]
+                if not domain and not settings.DEMO_MODE:
+                    continue
+                key = "people:" + item["discovery_key"][:32]
+                previous = get_checkpoint(db, c.id, key)
+                people_was_cached[key] = bool(previous and previous.status == "complete")
+                inputs = {"revision": "people-search-v1", "demo": settings.DEMO_MODE,
+                          "domain": domain, "titles": plan["titles"],
+                          "limit": settings.PRIMARY_PEOPLE_RESULTS}
+                operation = (
+                    (lambda index=index: [DEMO_PEOPLE[index % len(DEMO_PEOPLE)]])
+                    if settings.DEMO_MODE else
+                    (lambda domain=domain: api.people_search(
+                        domain, plan["titles"], limit=settings.PRIMARY_PEOPLE_RESULTS))
+                )
+                people_jobs.append((key, inputs, operation))
+            primary_people_results = checkpointed_parallel(
+                db, c.id, people_jobs, max_workers=settings.API_CONCURRENCY,
+            )
             candidate_outcomes = []
             # A candidate becomes a Lead ONLY after verified business-email
             # enrichment. Even strong company fit alone is not contactability.
