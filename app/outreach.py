@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 
 from . import settings
 from .checkpoints import checkpointed, CheckpointNeedsReview
-from .crustdata import Crustdata
+from .crustdata import Crustdata, CrustdataError
 from .db import SessionLocal
 from .integrations import IntegrationError, send_email
 from .models import (Campaign, Lead, OutreachPolicy, OutreachAttempt,
@@ -238,6 +238,10 @@ def run_outreach(campaign_id: str) -> dict:
                     # Never retry an ambiguous chargeable request automatically.
                     result["held"] += 1
                     result["reasons"].append(type(exc).__name__)
+                    if isinstance(exc, CrustdataError):
+                        # Missing permission/credits likely affects every lead;
+                        # don't issue additional provider calls in this run.
+                        break
                     continue
             reason = policy_decision(db, campaign, lead, policy)
             if reason != "eligible":
