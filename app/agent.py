@@ -189,7 +189,7 @@ def run_campaign(campaign_id: str):
                 lambda: (DEMO_COMPANIES[:settings.MAX_COMPANIES]
                          if settings.DEMO_MODE else api.company_search(
                              plan["query"], c.country, settings.MAX_COMPANIES,
-                             c.min_headcount, c.max_headcount)),
+                             c.min_revenue_usd, c.max_revenue_usd)),
             )
             audit(db, c.id, "crustdata_company_query", details=search_trace(
                 "/company/search", company_request, companies,
@@ -205,9 +205,86 @@ def run_campaign(campaign_id: str):
                 "note": "Indices prioritize paid enrichment, not probabilities of buying.",
             })
             db.commit()
+            # PASS TWO: enrich top-ranked firms, then reorder by their
+            # domain-specific evidence score BEFORE spending on people/contact.
+            # The preliminary Crustdata relevance order remains an explicit
+            # tie-breaker and is stored in the report.
+            enriched_candidates = []
+            seen_domains = set()
+            for position, prioritized_item in enumerate(prioritized):
+                company = prioritized_item["company"]
+                info = company.get("basic_info") or {}
+                domain = str(info.get("primary_domain") or "").lower().removeprefix("www.")[:180]
+                if not info.get("name") or (
+                        not settings.DEMO_MODE and not domain):
+                    continue
+                if c.seller_domain and domain == c.seller_domain.lower():
+                    continue
+                identity = domain or str(company.get("crustdata_company_id") or "") or info["name"].lower()
+                if identity in seen_domains:
+                    continue
+                seen_domains.add(identity)
+                discovery_key = fingerprint({"identity": identity})
+                if (not settings.DEMO_MODE and domain and
+                        position < settings.MAX_PROSPECT_ENRICHMENTS):
+                    key = "prospect_enrich_advanced:" + discovery_key[:32]
+                    previous = get_checkpoint(db, c.id, key)
+                    was_cached = bool(previous and previous.status == "complete")
+                    fields = RequestBuilder.advanced_enrich_fields()
+                    enriched = checkpointed(
+                        db, c.id, key,
+                        {"revision": "prospect-advanced-v1", "domain": domain,
+                         "fields": fields},
+                        lambda domain=domain: api.company_enrich_advanced(domain),
+                    )
+                    if enriched:
+                        company = {**company, **enriched,
+                                   "basic_info": {**info, **(enriched.get("basic_info") or {})}}
+                    audit(db, c.id, "crustdata_prospect_enrichment", details={
+                        "domain": domain, "from_checkpoint": was_cached,
+                        "requested_fields": fields,
+                        "returned_sections": sorted(enriched.keys()),
+                        "match_found": bool(enriched),
+                        "provider_calls_this_run": 0 if was_cached else 1,
+                    })
+                    db.commit()
+                # No contact available yet, so this is a company-only fit.
+                preliminary_card = (score_market_fit(c, company, None, skill)
+                                    if skill else score_company(c, company, None))
+                enriched_candidates.append({
+                    **prioritized_item,
+                    "company": company,
+                    "discovery_key": discovery_key,
+                    "enriched_fit": preliminary_card.get("total"),
+                    "enriched_scorecard": preliminary_card,
+                })
+            # Company-only evidence after enrichment becomes the primary ranking;
+            # Crustdata semantic position is a stable tie-breaker. Missing
+            # evidence stays unscored and sorts after scored candidates.
+            enriched_candidates.sort(key=lambda item: (
+                item["enriched_fit"] is None,
+                -(item["enriched_fit"] or 0),
+                -item["discovery_priority"],
+                item["provider_rank"],
+            ))
+            audit(db, c.id, "candidate_enriched_ranking", details={
+                "approach": "post-enrichment domain-specific score; Crustdata rank on ties",
+                "candidates": [{
+                    "rank": index,
+                    "company": (item["company"].get("basic_info") or {}).get("name", ""),
+                    "domain": (item["company"].get("basic_info") or {}).get("primary_domain", ""),
+                    "provider_rank": item["provider_rank"],
+                    "first_stage_index": item["discovery_priority"],
+                    "company_score": item["enriched_fit"],
+                    "market": skill.get("market_domain", "legacy"),
+                } for index, item in enumerate(enriched_candidates, 1)],
+            })
+            db.commit()
+
+            candidate_outcomes = []
             # A candidate becomes a Lead ONLY after verified business-email
-            # enrichment. Even a strong company fit alone is not contactability.
-            for i, prioritized_item in enumerate(prioritized):
+            # enrichment. Even strong company fit alone is not contactability.
+            for i, prioritized_item in enumerate(enriched_candidates):
                 company = prioritized_item["company"]
                 info = company.get("basic_info") or {}
                 company_name = str(info.get("name") or "")[:200]
@@ -232,34 +309,13 @@ def run_campaign(campaign_id: str):
                     ))
                 )), None)
                 if lead and (lead.draft_body or lead.status != "draft"):
-                    continue
-
-                # Explicit budget: enrich up to N shortlisted companies even
-                # when their search rows contain a basic description.
-                if (not settings.DEMO_MODE and domain and
-                        i < settings.MAX_PROSPECT_ENRICHMENTS):
-                    key = "prospect_enrich_advanced:" + discovery_key[:32]
-                    old = get_checkpoint(db, c.id, key)
-                    was_cached = bool(old and old.status == "complete")
-                    fields = RequestBuilder.advanced_enrich_fields()
-                    enriched = checkpointed(
-                        db, c.id, key,
-                        {"revision": "prospect-advanced-v1", "domain": domain,
-                         "fields": fields},
-                        lambda: api.company_enrich_advanced(domain),
-                    )
-                    if enriched:
-                        company = {**company, **enriched,
-                                   "basic_info": {**info, **(enriched.get("basic_info") or {})}}
-                        info = company["basic_info"]
-                    audit(db, c.id, "crustdata_prospect_enrichment", details={
-                        "domain": domain, "from_checkpoint": was_cached,
-                        "requested_fields": fields,
-                        "returned_sections": sorted(enriched.keys()),
-                        "match_found": bool(enriched),
-                        "provider_calls_this_run": 0 if was_cached else 1,
+                    candidate_outcomes.append({
+                        "company": company_name, "domain": domain,
+                        "score": lead.fit_score, "status": "existing_lead",
+                        "provider_rank": prioritized_item["provider_rank"],
+                        "first_stage_index": prioritized_item["discovery_priority"],
                     })
-                    db.commit()
+                    continue
 
                 people = []
                 if i < settings.MAX_PEOPLE_SEARCHES and (settings.DEMO_MODE or domain):
@@ -326,6 +382,13 @@ def run_campaign(campaign_id: str):
                             person = candidate
                             break
                 if not verified_email:
+                    candidate_outcomes.append({
+                        "company": company_name, "domain": domain,
+                        "score": candidate_score.get("total"),
+                        "status": "skipped_no_verified_business_email",
+                        "provider_rank": prioritized_item["provider_rank"],
+                        "first_stage_index": prioritized_item["discovery_priority"],
+                    })
                     audit(db, c.id, "candidate_skipped_no_verified_email", details={
                         "company": company_name, "domain": domain,
                         "reason": ("no_matching_deliverable_business_email"
@@ -412,6 +475,28 @@ def run_campaign(campaign_id: str):
                                          for item in candidate_score["criteria"]},
                 })
                 db.commit()
+                candidate_outcomes.append({
+                    "company": company_name, "domain": domain,
+                    "score": lead.fit_score, "status": "lead_created",
+                    "provider_rank": prioritized_item["provider_rank"],
+                    "first_stage_index": prioritized_item["discovery_priority"],
+                    "lead_id": lead.id,
+                })
+
+            # Final ranking includes uncontactable firms, but only actual
+            # verified-contact companies are represented by Lead rows.
+            candidate_outcomes.sort(key=lambda row: (
+                row["score"] is None, -(row["score"] or 0),
+                -row["first_stage_index"], row["provider_rank"],
+            ))
+            audit(db, c.id, "candidate_final_ranking", details={
+                "method": "post-company-enrichment fit plus verified buyer contact where available",
+                "candidates": [
+                    {**item, "final_rank": ix}
+                    for ix, item in enumerate(candidate_outcomes, 1)
+                ],
+            })
+            db.commit()
 
             c.status = "ready"
             c.error = ""
