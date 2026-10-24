@@ -16,6 +16,7 @@ from .market_skill import get_market_playbook, prioritize_contacts, contact_role
 from .market_scoring import score_market_fit
 from .candidate_ranking import prioritize_companies, report_priorities
 from .outreach import choose_verified_email
+from .contact_discovery import discover_contact
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +197,8 @@ def run_campaign(campaign_id: str):
                 company_was_cached, demo=settings.DEMO_MODE))
             db.commit()
             seen = set()
-            contact_attempts = 0
+            contact_budget = {"used": 0}
+            fallback_budget = {"used": 0}
             skill = (research.get("market_skill") or {}) if c.seller_domain else {}
             prioritized = prioritize_companies(c, companies, skill)
             audit(db, c.id, "candidate_search_prioritization", details={
@@ -358,67 +360,52 @@ def run_campaign(campaign_id: str):
                     })
                     db.commit()
 
-                if skill and people:
-                    people = prioritize_contacts(people, skill)
-                candidate_score = (score_market_fit(c, company, people[0] if people else None, skill)
-                                   if skill else score_company(c, company, people[0] if people else None))
-                person = None
-                verified_email = ""
-                valid_profile_urls = 0
-                email_enrichment_attempted = False
-                if settings.DEMO_MODE and people:
-                    # Reserved example.com fixture, never a deliverable live contact.
-                    person = people[0]
-                    verified_email = f"fictional{i+1}@example.com"
+                contact = None
+                if settings.DEMO_MODE:
+                    if skill and people:
+                        people = prioritize_contacts(people, skill)
+                    person = people[0] if people else None
+                    verified_email = f"fictional{i+1}@example.com" if person else ""
+                    best_person = person
                 else:
-                    for candidate in people:
-                        social = ((candidate.get("social_handles") or {}).get(
-                            "professional_network_identifier") or {})
-                        profile_url = str(social.get("profile_url") or "")
-                        if not profile_url:
-                            continue
-                        valid_profile_urls += 1
-                        if contact_attempts >= settings.MAX_CONTACT_ENRICHMENTS:
-                            continue
-                        contact_attempts += 1
-                        email_enrichment_attempted = True
-                        key = "candidate_email:" + discovery_key[:24] + ":" + fingerprint(
-                            {"profile": profile_url})[:16]
-                        prior = get_checkpoint(db, c.id, key)
-                        cached = bool(prior and prior.status == "complete")
-                        records = checkpointed(
-                            db, c.id, key,
-                            {"revision": "candidate-email-v1", "profile": profile_url,
-                             "company_domain": domain, "field": "contact.business_emails"},
-                            lambda profile_url=profile_url: api.business_email_enrich(profile_url),
-                        )
-                        email = choose_verified_email(records, domain)
-                        audit(db, c.id, "crustdata_contact_enrichment", details={
-                            "company": company_name, "domain": domain,
-                            "from_checkpoint": cached,
-                            "deliverable_company_email_found": bool(email),
-                            "provider_calls_this_run": 0 if cached else 1,
-                            "requested_fields": ["contact.business_emails"],
-                            # No PII values or API keys in execution history.
-                        })
-                        db.commit()
-                        if email:
-                            verified_email = email
-                            person = candidate
-                            break
+                    contact = discover_contact(
+                        db, c.id, domain, discovery_key, people, skill, api,
+                        audit, contact_budget, fallback_budget,
+                    )
+                    person = contact["person"]
+                    verified_email = contact["email"]
+                    best_person = contact["best_person"]
+                    # Always surface the best potential buying-committee contact,
+                    # but never create an outreach Lead for an unverified email.
+                    audit(db, c.id, "contact_candidates_ranked", details={
+                        "company": company_name, "domain": domain,
+                        "candidates": contact["candidates"],
+                        "people_considered": contact["people_considered"],
+                        "fallback_profiles": contact["fallback_profiles"],
+                        "email_verified": bool(verified_email),
+                        "contact_enrichment_calls_this_run": contact_budget["used"],
+                        "fallback_people_search_calls_this_run": fallback_budget["used"],
+                    })
+                    db.commit()
+                candidate_score = (
+                    score_market_fit(c, company, person or best_person, skill)
+                    if skill else score_company(c, company, person or best_person)
+                )
                 if not verified_email:
                     contact_reason = (
-                        "people_search_budget_exhausted" if not people_search_attempted
-                        else "no_contact_profiles_returned" if not people
-                        else "no_professional_profile_urls" if valid_profile_urls == 0
-                        else "contact_enrichment_budget_exhausted" if not email_enrichment_attempted
-                        else "no_matching_deliverable_business_email"
+                        "people_search_budget_exhausted" if not people_search_attempted and
+                        not (contact and contact["fallback_profiles"]) else
+                        (contact["reason"] if contact else "no_contact_profiles_returned")
                     )
+                    suggested = (contact["candidates"][0] if contact and
+                                 contact["candidates"] else {})
                     candidate_outcomes.append({
                         "company": company_name, "domain": domain,
                         "score": candidate_score.get("total"),
                         "status": "skipped_no_verified_business_email",
                         "reason": contact_reason,
+                        "suggested_contact": suggested,
+                        "contact_candidates": (contact["candidates"] if contact else [])[:4],
                         "provider_rank": prioritized_item["provider_rank"],
                         "first_stage_index": prioritized_item["discovery_priority"],
                     })
@@ -426,7 +413,9 @@ def run_campaign(campaign_id: str):
                         "company": company_name, "domain": domain,
                         "reason": contact_reason,
                         "candidate_fit_score": candidate_score.get("total"),
+                        "best_contact": suggested,
                         "max_contact_enrichments": settings.MAX_CONTACT_ENRICHMENTS,
+                        "max_fallback_searches": settings.MAX_PEOPLE_FALLBACK_SEARCHES,
                     })
                     db.commit()
                     continue
@@ -535,6 +524,9 @@ def run_campaign(campaign_id: str):
                 "advanced_enrichments_attempted": enrichment_attempts,
                 "people_search_limit": settings.MAX_PEOPLE_SEARCHES,
                 "contact_enrichment_limit": settings.MAX_CONTACT_ENRICHMENTS,
+                "contact_enrichments_attempted": contact_budget["used"],
+                "fallback_people_searches_attempted": fallback_budget["used"],
+                "fallback_people_search_limit": settings.MAX_PEOPLE_FALLBACK_SEARCHES,
                 "new_leads": sum(item["status"] == "lead_created" for item in candidate_outcomes),
                 "skipped_or_existing": sum(item["status"] != "lead_created" for item in candidate_outcomes),
                 "outcome_counts": {
