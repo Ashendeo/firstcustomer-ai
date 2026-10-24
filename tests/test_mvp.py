@@ -177,7 +177,9 @@ def test_live_orchestrator_with_mocked_providers(client, token, monkeypatch):
         assert leads[0].fit_score == leads[0].evidence["scorecard"]["total"]
         assert sum(x["earned"] for x in leads[0].evidence["scorecard"]["criteria"]) == leads[0].fit_score
         assert leads[0].evidence["model_assessment"]["model_score"] == 78
-        assert "utm_content=" in leads[0].draft_body
+        assert "Why I\'m reaching out to Sample Business" in leads[0].draft_body
+        assert "Organizes employee sports events" in leads[0].draft_body
+        assert "utm_content=" not in leads[0].draft_body  # Scheduling follows a positive reply.
 
 
 def test_qwen_empty_response_is_bounded(monkeypatch):
