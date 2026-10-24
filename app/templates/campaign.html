@@ -34,6 +34,42 @@
   <div class="stat"><div class="statvalue">{{ counts.booked }}</div><span>Meetings booked</span></div>
 </div>
 <section class="panel">
+  <h2>How candidates are sorted — two stages</h2>
+  <p class="hint">Stage 1 combines the Crustdata hybrid relevance order (70%) with whatever company evidence is already available (30%). The 0–100 provider relevance index is a normalized <em>rank position</em>, not a probability or Crustdata-provided score. Stage 2 scores firms again after paid advanced enrichment, sorts by domain-specific company evidence, and uses stage-1 priority as a tie-breaker. Contact searches follow Stage 2. The final report reflects contact qualification, and keeps firms with no deliverable email visible as skipped candidates.</p>
+  {% set stage1 = ranking_events.candidate_search_prioritization or {} %}
+  {% set stage2 = ranking_events.candidate_enriched_ranking or {} %}
+  {% set final = ranking_events.candidate_final_ranking or {} %}
+  {% if stage1.candidates %}
+  <details><summary>Stage 1 — Crustdata relevance + available evidence ({{ stage1.candidates|length }} companies)</summary>
+    <div class="table-scroll"><table><thead><tr><th>Priority</th><th>Company</th><th>Crustdata rank</th><th>Early score</th><th>Priority index</th></tr></thead><tbody>
+    {% for item in stage1.candidates %}<tr>
+      <td>#{{ item.priority_rank }}</td><td>{{ item.company }}</td><td>#{{ item.provider_rank }}</td>
+      <td>{{ item.pre_enrichment_evidence_score if item.pre_enrichment_evidence_score is not none else 'Unscored' }}</td>
+      <td>{{ item.priority_index }}</td></tr>{% endfor %}
+    </tbody></table></div>
+  </details>{% endif %}
+  {% if stage2.candidates %}
+  <details open><summary>Stage 2 — post-enrichment company ranking ({{ stage2.candidates|length }} companies)</summary>
+    <div class="table-scroll"><table><thead><tr><th>Rank</th><th>Company</th><th>Company evidence score</th><th>Original Crustdata rank</th></tr></thead><tbody>
+    {% for item in stage2.candidates %}<tr><td>#{{ item.rank }}</td>
+      <td>{{ item.company }}<div class="small">{{ item.domain }}</div></td>
+      <td>{{ item.company_score if item.company_score is not none else 'Insufficient evidence' }}</td>
+      <td>#{{ item.provider_rank }}</td></tr>{% endfor %}
+    </tbody></table></div>
+  </details>{% endif %}
+  {% if final.candidates %}
+  <h3>Final candidate outcomes</h3>
+  <div class="table-scroll"><table><thead><tr><th>Rank</th><th>Company</th><th>Score</th><th>Outcome</th></tr></thead><tbody>
+    {% for item in final.candidates %}<tr>
+      <td>#{{ item.final_rank }}</td><td>{{ item.company }}</td>
+      <td>{{ item.score if item.score is not none else 'Unscored' }}</td>
+      <td>{% if item.lead_id %}<a href="/leads/{{ item.lead_id }}">{{ item.status.replace('_', ' ') }}</a>{% else %}{{ item.status.replace('_', ' ') }}{% endif %}</td>
+    </tr>{% endfor %}
+  </tbody></table></div>{% endif %}
+  {% if not stage1.candidates and not stage2.candidates and not final.candidates %}
+  <p class="empty">Ranking has not yet been run on this campaign.</p>{% endif %}
+</section>
+<section class="panel">
 <div class="between"><h2>Company ranking and comparison</h2><span class="muted">Descending evidence score, not purchase probability</span></div>
 <p class="hint">New campaigns use a market-specific scorecard with observed industry fit, estimated USD revenue, problem relevance, timing proxies, buyer-role fit, and evidence coverage. The number is not a statistical probability of buying. Historical model scores retain their original value and are labelled separately.</p>
 {% if ranked %}
