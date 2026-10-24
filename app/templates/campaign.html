@@ -28,13 +28,24 @@
   {% endif %}
 </section>
 <div class="stats">
-  <div class="stat"><div class="statvalue">{{ leads|length }}</div><span>Accounts found</span></div>
+  <div class="stat"><div class="statvalue">{{ ranking_summary.company_search_results if ranking_summary else leads|length }}</div><span>Companies discovered</span></div>
+  <div class="stat"><div class="statvalue">{{ ranking_summary.stage2_ranked if ranking_summary else leads|length }}</div><span>Companies ranked</span></div>
+  <div class="stat"><div class="statvalue">{{ leads|length }}</div><span>Verified-contact leads</span></div>
   <div class="stat"><div class="statvalue">{{ leads|selectattr('person_name')|list|length }}</div><span>Contacts identified</span></div>
   <div class="stat"><div class="statvalue">{{ counts.sent + counts.booked }}</div><span>Outreach sent / booked</span></div>
   <div class="stat"><div class="statvalue">{{ counts.booked }}</div><span>Meetings booked</span></div>
 </div>
 <section class="panel">
   <h2>How candidates are sorted — two stages</h2>
+  {% if ranking_summary %}
+  <p><strong>Search returned {{ ranking_summary.company_search_results }} companies → Stage 1 ranked {{ ranking_summary.stage1_ranked }} → Stage 2 retained {{ ranking_summary.stage2_ranked }} → {{ ranking_summary.new_leads }} new verified-contact leads.</strong></p>
+  {% if ranking_summary.search_empty %}
+  <div class="notice">Crustdata Company Search returned zero candidates. Ranking did not filter anything. Check the generated search query and geographic filter in Execution Trace; changing the query requires a new search, which may incur an API charge.</div>
+  {% elif ranking_summary.new_leads == 0 %}
+  <div class="notice">Companies were discovered, but none became new Leads. This is a contact qualification outcome, not a ranking filter. Review the skipped statuses below and adjust the people/contact-enrichment limits if needed.</div>
+  {% endif %}
+  <p class="hint">Execution caps: {{ ranking_summary.advanced_enrichments_attempted }} company enrichments attempted, people searches limited to {{ ranking_summary.people_search_limit }}, contact enrichments limited to {{ ranking_summary.contact_enrichment_limit }}.</p>
+  {% endif %}
   <p class="hint">Stage 1 combines the Crustdata hybrid relevance order (70%) with whatever company evidence is already available (30%). The 0–100 provider relevance index is a normalized <em>rank position</em>, not a probability or Crustdata-provided score. Stage 2 scores firms again after paid advanced enrichment, sorts by domain-specific company evidence, and uses stage-1 priority as a tie-breaker. Contact searches follow Stage 2. The final report reflects contact qualification, and keeps firms with no deliverable email visible as skipped candidates.</p>
   {% set stage1 = ranking_events.candidate_search_prioritization or {} %}
   {% set stage2 = ranking_events.candidate_enriched_ranking or {} %}
@@ -50,11 +61,11 @@
   </details>{% endif %}
   {% if stage2.candidates %}
   <details open><summary>Stage 2 — post-enrichment company ranking ({{ stage2.candidates|length }} companies)</summary>
-    <div class="table-scroll"><table><thead><tr><th>Rank</th><th>Company</th><th>Company evidence score</th><th>Original Crustdata rank</th></tr></thead><tbody>
+    <div class="table-scroll"><table><thead><tr><th>Rank</th><th>Company</th><th>Company evidence score</th><th>Original Crustdata rank</th><th>Eligibility</th></tr></thead><tbody>
     {% for item in stage2.candidates %}<tr><td>#{{ item.rank }}</td>
       <td>{{ item.company }}<div class="small">{{ item.domain }}</div></td>
       <td>{{ item.company_score if item.company_score is not none else 'Insufficient evidence' }}</td>
-      <td>#{{ item.provider_rank }}</td></tr>{% endfor %}
+      <td>#{{ item.provider_rank }}</td><td>{{ item.contact_block_reason.replace('_',' ') if item.contact_block_reason else 'Eligible for contact search' }}</td></tr>{% endfor %}
     </tbody></table></div>
   </details>{% endif %}
   {% if final.candidates %}
@@ -63,7 +74,7 @@
     {% for item in final.candidates %}<tr>
       <td>#{{ item.final_rank }}</td><td>{{ item.company }}</td>
       <td>{{ item.score if item.score is not none else 'Unscored' }}</td>
-      <td>{% if item.lead_id %}<a href="/leads/{{ item.lead_id }}">{{ item.status.replace('_', ' ') }}</a>{% else %}{{ item.status.replace('_', ' ') }}{% endif %}</td>
+      <td>{% if item.lead_id %}<a href="/leads/{{ item.lead_id }}">{{ item.status.replace('_', ' ') }}</a>{% else %}{{ item.status.replace('_', ' ') }}{% endif %}{% if item.reason %}<div class="small">{{ item.reason.replace('_', ' ') }}</div>{% endif %}</td>
     </tr>{% endfor %}
   </tbody></table></div>{% endif %}
   {% if not stage1.candidates and not stage2.candidates and not final.candidates %}
