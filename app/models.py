@@ -24,7 +24,9 @@ class Campaign(Base):
     country: Mapped[str] = mapped_column(String(60), default="India")
     buyer_titles: Mapped[str] = mapped_column(Text, default="Head of HR,HR Director")
     min_headcount: Mapped[int] = mapped_column(Integer, default=0)
+    min_revenue_usd: Mapped[int] = mapped_column(Integer, default=0)
     max_headcount: Mapped[int] = mapped_column(Integer, default=0)
+    max_revenue_usd: Mapped[int] = mapped_column(Integer, default=0)
     booking_url: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="draft")
     error: Mapped[str] = mapped_column(Text, default="")
@@ -98,7 +100,7 @@ class OutreachPolicy(Base):
     campaign_id: Mapped[str] = mapped_column(
         ForeignKey("campaigns.id", ondelete="CASCADE"), primary_key=True)
     auto_send: Mapped[bool] = mapped_column(Boolean, default=True)
-    min_score: Mapped[int] = mapped_column(Integer, default=85)
+    min_score: Mapped[int] = mapped_column(Integer, default=75)
     daily_limit: Mapped[int] = mapped_column(Integer, default=10)
     prepare_linkedin_drafts: Mapped[bool] = mapped_column(Boolean, default=False)
     mode: Mapped[str] = mapped_column(String(24), default="simulation")
