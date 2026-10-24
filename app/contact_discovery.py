@@ -53,6 +53,47 @@ def verified_business_email_from_search(person: dict, domain: str) -> str:
     return ""
 
 
+def company_people_profiles(company: dict, domain: str) -> list[dict]:
+    """Normalize company-level decision makers into people search candidates."""
+    people = company.get("people") or {}
+    if isinstance(people, list):
+        groups = [people]
+    elif isinstance(people, dict):
+        groups = [people.get(k) or [] for k in (
+            "decision_makers", "executives", "founders", "key_people", "leadership")]
+    else:
+        groups = []
+    candidates, seen = [], set()
+    for group in groups:
+        if not isinstance(group, list):
+            continue
+        for entry in group:
+            if not isinstance(entry, dict):
+                continue
+            person = entry.get("person_data") or entry.get("person") or entry
+            if not isinstance(person, dict):
+                continue
+            info = person.get("basic_profile") or {}
+            name = str(info.get("name") or person.get("name") or "").strip()
+            if not name:
+                continue
+            normalized = dict(person)
+            normalized.setdefault("basic_profile", {"name": name})
+            title = str(person.get("title") or person.get("current_title") or "")
+            if title and not normalized.get("experience"):
+                normalized["experience"] = {
+                    "employment_details": {"current": [{
+                        "name": (company.get("basic_info") or {}).get("name", ""),
+                        "title": title, "company_website": domain
+                    }]}
+                }
+            identity = profile_url(normalized) or name.lower()
+            if identity not in seen:
+                seen.add(identity)
+                candidates.append(normalized)
+    return candidates
+
+
 def profile_url(person: dict) -> str:
     social = (person.get("social_handles") or {}).get("professional_network_identifier") or {}
     url = str(social.get("profile_url") or "").strip()
