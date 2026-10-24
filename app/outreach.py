@@ -42,7 +42,7 @@ def get_policy(db, campaign_id: str) -> OutreachPolicy:
     policy = db.get(OutreachPolicy, campaign_id)
     if policy is None:
         policy = OutreachPolicy(
-            campaign_id=campaign_id, auto_send=True, min_score=85,
+            campaign_id=campaign_id, auto_send=True, min_score=75,
             daily_limit=10, prepare_linkedin_drafts=False,
             mode="simulation", legal_basis="", organization_type="",
             sender_postal_address="", reply_to="",
