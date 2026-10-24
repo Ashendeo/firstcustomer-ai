@@ -157,7 +157,8 @@ class MarketPlaybook(Base):
     committed before invoking paid providers; uncertain work is not replayed.
     """
     __tablename__ = "market_playbooks"
-    seller_domain: Mapped[str] = mapped_column(String(180), primary_key=True)
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    seller_domain: Mapped[str] = mapped_column(String(180), index=True)
     product_hash: Mapped[str] = mapped_column(String(64))
     market_domain: Mapped[str] = mapped_column(String(90), default="")
     status: Mapped[str] = mapped_column(String(24), default="in_flight")
