@@ -195,7 +195,7 @@ def test_sparse_results_are_ranked_not_silently_filtered(client, token, monkeypa
     assert page.status_code == 200
     assert "Companies discovered" in page.text
     assert "Companies ranked" in page.text
-    assert "Verified-contact leads" in page.text
+    assert "Saved contact prospects" in page.text
     assert "Companies were discovered, but none became new Leads" in page.text
     assert "missing company domain" in page.text
 
