@@ -53,6 +53,7 @@ def test_research_first_generates_grounded_query_and_uses_checkpoints(
         client, token, monkeypatch):
     campaign_id = make_campaign(client, token)
     monkeypatch.setattr(settings, "DEMO_MODE", False)
+    monkeypatch.setattr(settings, "CONTACT_LOOKUP_MODE", "contact")
     monkeypatch.setattr(settings, "CRUSTDATA_API_KEY", "fake")
     monkeypatch.setattr(settings, "BRAVE_SEARCH_API_KEY", "fake")
     monkeypatch.setattr(settings, "MAX_PROSPECT_ENRICHMENTS", 0)
