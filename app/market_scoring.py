@@ -44,6 +44,35 @@ def _recent(value, months=18):
         return False
 
 
+def revenue_usd_range(company: dict):
+    """Retrieve estimated annual revenue range in USD; no employee proxy."""
+    data = company.get("revenue") or {}
+    if not isinstance(data, dict):
+        return None, None
+    def numeric(keys):
+        for key in keys:
+            value = data.get(key)
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                number = float(str(value).replace(",", "").replace("$", ""))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= number < 1e16:
+                return number
+        return None
+    lower = numeric(("estimated_revenue_lower_usd", "estimated_revenue_min_usd",
+                     "revenue_min_usd", "lower_usd", "min_usd"))
+    upper = numeric(("estimated_revenue_higher_usd", "estimated_revenue_upper_usd",
+                     "estimated_revenue_max_usd", "revenue_max_usd", "upper_usd", "max_usd"))
+    point = numeric(("estimated_revenue_usd", "annual_revenue_usd", "revenue_estimate_usd"))
+    if lower is None and upper is None:
+        return (point, point)
+    if lower is None: lower = upper
+    if upper is None: upper = lower
+    return lower, upper
+
+
 def score_market_fit(campaign, company: dict, person: dict | None,
                      skill: dict) -> dict:
     info = company.get("basic_info") or {}
@@ -77,16 +106,24 @@ def score_market_fit(campaign, company: dict, person: dict | None,
     industry = round(weights["industry"] * fraction(industries, skill.get("industry_terms", [])))
     need = round(weights["need"] * fraction(needs, skill.get("need_terms", [])))
 
-    n = _int(headcount.get("total"))
-    low, high = int(campaign.min_headcount or 0), int(campaign.max_headcount or 0)
-    if n is None:
-        size, size_reason = 0, "Headcount not observed"
-    elif (low and n < low) or (high and n > high):
-        size, size_reason = 0, f"Observed {n} outside configured {low or 'any'}–{high or 'any'}"
+    lower_usd, upper_usd = revenue_usd_range(company)
+    low, high = int(campaign.min_revenue_usd or 0), int(campaign.max_revenue_usd or 0)
+    if lower_usd is None:
+        size, size_reason = 0, "Annual revenue (USD) unavailable; no financial-scale points"
+    elif (low and upper_usd < low) or (high and lower_usd > high):
+        size, size_reason = 0, (
+            f"Estimated revenue USD {lower_usd:,.0f}–{upper_usd:,.0f} outside range")
     elif low or high:
-        size, size_reason = weights["scale"], f"Observed {n} in requested size range"
+        fully_inside = ((not low or lower_usd >= low) and
+                        (not high or upper_usd <= high))
+        size = weights["scale"] if fully_inside else round(weights["scale"] / 2)
+        size_reason = (f"Estimated annual revenue USD {lower_usd:,.0f}–{upper_usd:,.0f}; "
+                       + ("range inside target" if fully_inside else
+                          "estimate partly overlaps target range"))
     else:
-        size, size_reason = round(weights["scale"] / 2), f"Observed {n}; no size range specified (neutral)"
+        size, size_reason = round(weights["scale"] / 2), (
+            f"Estimated annual revenue USD {lower_usd:,.0f}–{upper_usd:,.0f}; "
+            "no revenue bounds specified (neutral)")
 
     observed_events = []
     try:
@@ -119,7 +156,7 @@ def score_market_fit(campaign, company: dict, person: dict | None,
              round(weights["buyer"] * .5) if title else 0)
 
     completeness = sum(bool(x) for x in (
-        profile_text.strip(), n is not None,
+        profile_text.strip(), lower_usd is not None,
         bool(hiring or funding or revenue or news), bool(title)
     ))
     coverage = round(weights["coverage"] * completeness / 4)
@@ -127,8 +164,8 @@ def score_market_fit(campaign, company: dict, person: dict | None,
         {"key": "industry", "name": "Market / industry fit", "earned": industry,
          "max": weights["industry"], "source": "company.basic_info + taxonomy",
          "explanation": "Observed keywords: " + (", ".join(industries) or "none")},
-        {"key": "scale", "name": "Company scale / capacity", "earned": size,
-         "max": weights["scale"], "source": "company.headcount.total",
+        {"key": "scale", "name": "Estimated annual revenue fit (USD)", "earned": size,
+         "max": weights["scale"], "source": "company.revenue (estimated USD range)",
          "explanation": size_reason},
         {"key": "need", "name": "Potential problem relevance", "earned": need,
          "max": weights["need"], "source": "description, taxonomy, hiring, news, technographics",
@@ -145,11 +182,11 @@ def score_market_fit(campaign, company: dict, person: dict | None,
          "explanation": f"{completeness}/4 evidence groups populated"},
     ]
     # A bare name/domain is not evidence of target fitness.
-    scorable = bool(profile_text.strip() or n is not None or title or observed_events)
+    scorable = bool(profile_text.strip() or lower_usd is not None or title or observed_events)
     total = sum(item["earned"] for item in criteria) if scorable else None
     gaps = []
     if not profile_text.strip(): gaps.append("No industry or company description")
-    if n is None: gaps.append("Headcount missing")
+    if lower_usd is None: gaps.append("Estimated annual revenue USD unavailable")
     if not observed_events: gaps.append("No observed buying-timing proxies (not proof of no intent)")
     if not title: gaps.append("No buying committee member identified")
     return {
