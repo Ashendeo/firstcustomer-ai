@@ -469,6 +469,56 @@ def run_campaign(campaign_id: str):
                         "provider_rank": prioritized_item["provider_rank"],
                         "first_stage_index": prioritized_item["discovery_priority"],
                     })
+                    # A real person is a prospect even without an email.
+                    # Store the contact for follow-up/research, but do not
+                    # create any mail draft or authorize outbound delivery.
+                    if best_person is not None:
+                        saved_profile = best_person.get("basic_profile") or {}
+                        saved_roles = (((best_person.get("experience") or {})
+                                        .get("employment_details") or {}).get("current") or [])
+                        saved_title = str((saved_roles[0] if isinstance(saved_roles, list)
+                                           and saved_roles else {}).get("title") or "")[:180]
+                        saved_social = ((best_person.get("social_handles") or {})
+                                        .get("professional_network_identifier") or {})
+                        if lead is None:
+                            lead = Lead(
+                                campaign_id=c.id, discovery_key=discovery_key,
+                                company_id=company_id, company_name=company_name,
+                                domain=domain, email="",
+                                description=str(info.get("description") or "")[:2000],
+                                source="crustdata", status="needs_email_verification",
+                            )
+                            db.add(lead)
+                            db.flush()
+                        elif lead.status in ("draft", "needs_email_verification"):
+                            lead.status = "needs_email_verification"
+                        lead.person_id = str(best_person.get("crustdata_person_id") or "")[:80]
+                        lead.person_name = str(saved_profile.get("name") or "")[:160]
+                        lead.person_title = saved_title
+                        lead.person_profile = str(saved_social.get("profile_url") or "")[:1500]
+                        lead.fit_score = candidate_score.get("total")
+                        lead.fit_reason = candidate_score.get("summary") or ""
+                        lead.evidence = {
+                            **(lead.evidence or {}),
+                            "company_record": company,
+                            "person_record": best_person,
+                            "scorecard": candidate_score,
+                            "email_verification": "needs_email_verification",
+                            "contact_discovery_reason": contact_reason,
+                            "search_prioritization": {
+                                "provider_rank": prioritized_item["provider_rank"],
+                                "priority_index": prioritized_item["discovery_priority"],
+                                "pre_enrichment_score": prioritized_item["pre_enrichment_evidence_score"],
+                            },
+                        }
+                        lead.email = ""
+                        lead.draft_subject = ""
+                        lead.draft_body = ""
+                        candidate_outcomes[-1]["status"] = "contact_found_needs_email_verification"
+                        candidate_outcomes[-1]["lead_id"] = lead.id
+                        audit(db, c.id, "contact_saved_needs_email_verification",
+                              lead.id, {"company": company_name, "reason": contact_reason})
+                        db.commit()
                     audit(db, c.id, "candidate_skipped_no_verified_email", details={
                         "company": company_name, "domain": domain,
                         "reason": contact_reason,
