@@ -294,4 +294,13 @@ def run_outreach(campaign_id: str) -> dict:
                               details={"provider": "Resend"}))
             db.commit()
             result["sent"] += 1
+        db.add(AuditEvent(
+            campaign_id=campaign.id, action="outreach_worker_completed",
+            details={
+                "sent": result["sent"], "held": result["held"],
+                "reasons": list(dict.fromkeys(result["reasons"]))[:8],
+                "mode": "live",
+            },
+        ))
+        db.commit()
     return result
