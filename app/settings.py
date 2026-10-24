@@ -9,8 +9,8 @@ def env_bool(name: str, default: str = "false") -> bool:
 
 DEMO_MODE = env_bool("DEMO_MODE", "true")
 CRUSTDATA_API_KEY = os.getenv("CRUSTDATA_API_KEY", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3:4b")
+QWEN_MODEL_SERVER = os.getenv("QWEN_MODEL_SERVER", "http://localhost:11434/v1")
 MAX_COMPANIES = max(1, min(int(os.getenv("MAX_COMPANIES", "5")), 10))
 MAX_PEOPLE_SEARCHES = max(0, min(int(os.getenv("MAX_PEOPLE_SEARCHES", "3")), 10))
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
