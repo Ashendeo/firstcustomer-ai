@@ -16,6 +16,7 @@ from . import settings
 from .checkpoints import checkpointed
 from .db import SessionLocal
 from .models import Campaign, Lead, AuditEvent
+from .candidate_ranking import outreach_leads
 
 
 class GmailDemoConfigError(RuntimeError):
@@ -69,7 +70,7 @@ def send_campaign_demo(campaign_id: str) -> dict:
             Lead.draft_body != "",
         ).order_by(Lead.fit_score.desc())).all()
         from .sales_pitch import sales_pitch
-        for lead in leads[:10]:  # deliberately bounded
+        for lead in outreach_leads(leads):  # original search ranks 1-5
             key = "demo_gmail:" + lead.id
             from .checkpoints import get_checkpoint
             existing = get_checkpoint(db, campaign_id, key)

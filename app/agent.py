@@ -14,7 +14,7 @@ from .scoring import score_company
 from .seller_research import make_research_plan
 from .market_skill import get_market_playbook, prioritize_contacts, contact_role_match
 from .market_scoring import score_market_fit
-from .candidate_ranking import prioritize_companies, report_priorities
+from .candidate_ranking import prioritize_companies, report_priorities, OUTREACH_TOP_N
 from .outreach import choose_verified_email
 from .contact_discovery import discover_contact
 
@@ -202,7 +202,7 @@ def run_campaign(campaign_id: str):
             skill = (research.get("market_skill") or {}) if c.seller_domain else {}
             prioritized = prioritize_companies(c, companies, skill)
             audit(db, c.id, "candidate_search_prioritization", details={
-                "approach": "hybrid Crustdata rank (70%) + pre-enrichment evidence (30%)",
+                "approach": "Crustdata search order; fit scores are informational",
                 "candidates": report_priorities(prioritized),
                 "note": "Indices prioritize paid enrichment, not probabilities of buying.",
             })
@@ -219,6 +219,8 @@ def run_campaign(campaign_id: str):
             planned_domains = set()
             enrich_fields = RequestBuilder.advanced_enrich_fields()
             for candidate in prioritized:
+                if candidate["provider_rank"] > OUTREACH_TOP_N:
+                    continue
                 item = candidate["company"]
                 basic = item.get("basic_info") or {}
                 company_id = str(item.get("crustdata_company_id") or "")
@@ -265,6 +267,8 @@ def run_campaign(campaign_id: str):
                     drop_reason = "duplicate_company_result"
                 if not drop_reason:
                     seen_domains.add(identity)
+                if not drop_reason and prioritized_item["provider_rank"] > OUTREACH_TOP_N:
+                    drop_reason = "outside_search_top_five"
                 discovery_key = fingerprint({"identity": identity})
                 enrich_key = "prospect_enrich_advanced:" + fingerprint(
                     {"identity": domain})[:32]
@@ -299,18 +303,10 @@ def run_campaign(campaign_id: str):
                     "enriched_fit": preliminary_card.get("total"),
                     "enriched_scorecard": preliminary_card,
                 })
-            # Company-only evidence after enrichment becomes the primary ranking;
-            # Crustdata semantic position is a stable tie-breaker. Missing
-            # evidence stays unscored and sorts after scored candidates.
-            enriched_candidates.sort(key=lambda item: (
-                bool(item["contact_block_reason"]),
-                item["enriched_fit"] is None,
-                -(item["enriched_fit"] or 0),
-                -item["discovery_priority"],
-                item["provider_rank"],
-            ))
+            # Scoring never changes the provider search order.
+            enriched_candidates.sort(key=lambda item: item["provider_rank"])
             audit(db, c.id, "candidate_enriched_ranking", details={
-                "approach": "post-enrichment domain-specific score; Crustdata rank on ties",
+                "approach": "Crustdata search order; calculated fit scores do not reorder candidates",
                 "candidates": [{
                     "rank": index,
                     "company": item["company_label"],
@@ -496,6 +492,8 @@ def run_campaign(campaign_id: str):
                 lead.person_name = str(profile.get("name") or "")[:160]
                 lead.person_title = title
                 lead.person_profile = str(social.get("profile_url") or "")[:1500]
+                candidate_score = (score_market_fit(c, company, person, skill)
+                                   if skill else score_company(c, company, person))
                 lead.fit_score = candidate_score["total"]
                 lead.fit_reason = candidate_score["summary"]
                 selected_role = contact_role_match(person, skill) if skill else {}
@@ -559,12 +557,9 @@ def run_campaign(campaign_id: str):
 
             # Final ranking includes uncontactable firms, but only actual
             # verified-contact companies are represented by Lead rows.
-            candidate_outcomes.sort(key=lambda row: (
-                row["score"] is None, -(row["score"] or 0),
-                -row["first_stage_index"], row["provider_rank"],
-            ))
+            candidate_outcomes.sort(key=lambda row: row["provider_rank"])
             audit(db, c.id, "candidate_final_ranking", details={
-                "method": "post-company-enrichment fit plus verified buyer contact where available",
+                "method": "Crustdata search order with informational fit scores",
                 "candidates": [
                     {**item, "final_rank": ix}
                     for ix, item in enumerate(candidate_outcomes, 1)
@@ -587,7 +582,7 @@ def run_campaign(campaign_id: str):
                     for status in sorted({item["status"] for item in candidate_outcomes})
                 },
                 "search_empty": len(companies) == 0,
-                "note": "Ranking never filters by the 75-point outreach threshold. Lead creation requires an exact-domain deliverable work email.",
+                "note": "Only search ranks 1-5 are selected for outreach, regardless of fit score. Lead creation requires an exact-domain deliverable work email.",
             })
             db.commit()
 
@@ -618,4 +613,3 @@ def run_campaign(campaign_id: str):
                 audit(db, c.id, "campaign_failed",
                       details={"error_type": type(exc).__name__})
                 db.commit()
-

@@ -1,15 +1,10 @@
 """Deterministic within-campaign ranking; never implies purchase probability."""
 from .scoring import scorecard_for_display
+from .candidate_ranking import search_ordered_leads
 
 
 def ranked_companies(campaign, leads) -> list[dict]:
-    ranked = sorted(leads, key=lambda lead: (
-        lead.fit_score is None,
-        -(lead.fit_score or 0),
-        -(lead.evidence or {}).get("scorecard", {}).get("criteria", [{}])[0].get("earned", 0),
-        lead.company_name.casefold(),
-        lead.id,
-    ))
+    ranked = search_ordered_leads(leads)
     rows = []
     for rank, lead in enumerate(ranked, 1):
         rubric = scorecard_for_display(campaign, lead)

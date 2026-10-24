@@ -33,6 +33,7 @@ from .outreach import (get_policy, preview_outreach, run_outreach,
                        normalized_email, valid_unsubscribe_signature)
 from .resend_events import handle_resend_event, verify_signature
 from .ranking import ranked_companies
+from .candidate_ranking import outreach_leads, search_ordered_leads
 from .scoring import scorecard_for_display, score_company
 from .gmail_demo import gmail_demo_address, send_campaign_demo
 from .seller_research import normalize_company_domain
@@ -220,6 +221,7 @@ def create_campaign(
 def campaign_detail(campaign_id: str, request: Request, db: Session = Depends(get_db), _: str = Depends(authorize)):
     campaign = get_campaign(db, campaign_id)
     leads = db.scalars(select(Lead).where(Lead.campaign_id == campaign.id).order_by(Lead.fit_score.desc())).all()
+    leads = search_ordered_leads(leads)
     ranked = ranked_companies(campaign, leads)
     counts = {s: sum(l.status == s for l in leads) for s in ("draft", "approved", "sending", "sent", "booked", "canceled")}
     events = db.scalars(select(AuditEvent).where(AuditEvent.campaign_id == campaign.id).order_by(AuditEvent.created_at.desc()).limit(100)).all()
@@ -809,8 +811,8 @@ def start_gmail_conversations(campaign_id: str, tasks: BackgroundTasks,
     if not gmail_demo_address():
         raise HTTPException(422, "This action requires the same-account Gmail sandbox")
     leads = db.scalars(select(Lead).where(Lead.campaign_id == campaign_id)
-                      .order_by(Lead.fit_score.desc()).limit(10)).all()
-    for lead in leads:
+                      ).all()
+    for lead in outreach_leads(leads):
         gmail_conversations.start_conversation(db, lead, sandbox=True)
     tasks.add_task(gmail_conversations.tick)
     return redirect(f"/campaigns/{campaign_id}")

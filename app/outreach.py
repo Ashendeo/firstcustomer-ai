@@ -15,6 +15,7 @@ from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 
 from . import settings
+from .candidate_ranking import provider_rank, OUTREACH_TOP_N, outreach_leads
 from .checkpoints import checkpointed, CheckpointNeedsReview
 from .crustdata import Crustdata, CrustdataError
 from .db import SessionLocal
@@ -78,10 +79,11 @@ def policy_decision(db, campaign: Campaign, lead: Lead,
         return "linkedin_not_supported"
     if lead.source != "crustdata":
         return "not_live_lead"
-    if lead.fit_score is None:
-        return "insufficient_scoring_evidence"
-    if lead.fit_score < policy.min_score:
-        return "below_fit_threshold"
+    rank = provider_rank(lead)
+    if rank is None:
+        return "missing_search_rank"
+    if rank > OUTREACH_TOP_N:
+        return "outside_search_top_five"
     if lead.status != "draft":
         return "already_processed"
     if not lead.draft_subject or not lead.draft_body:
@@ -159,7 +161,8 @@ def preview_outreach(campaign_id: str) -> list[dict]:
             return []
         policy = get_policy(db, campaign_id)
         leads = db.scalars(select(Lead).where(
-            Lead.campaign_id == campaign_id).order_by(Lead.fit_score.desc())).all()
+            Lead.campaign_id == campaign_id)).all()
+        leads = outreach_leads(leads)
         return [{
             "lead_id": lead.id, "company": lead.company_name,
             "score": lead.fit_score,
@@ -217,7 +220,8 @@ def run_outreach(campaign_id: str) -> dict:
             return {**result, "error": jurisdiction_decision(campaign, policy)}
         api = Crustdata()
         leads = db.scalars(select(Lead).where(
-            Lead.campaign_id == campaign_id).order_by(Lead.fit_score.desc())).all()
+            Lead.campaign_id == campaign_id)).all()
+        leads = outreach_leads(leads)
         day = datetime.now(timezone.utc).date().isoformat()
         for lead in leads:
             # Check the global quota BEFORE potentially paying for an email
