@@ -43,7 +43,7 @@ class Crustdata:
             "search": {"query": query[:600], "mode": "hybrid"},
             "fields": ["basic_info.name", "basic_info.primary_domain",
                        "basic_info.description"],
-            "limit": min(limit, 10),
+            "limit": min(limit, 100),
         }
         if country:
             data["filters"] = {"field": "locations.country", "type": "=",
@@ -60,7 +60,7 @@ class Crustdata:
 
     @staticmethod
     def people_search_request(domain: str, titles: list[str], limit: int = 2) -> dict:
-        if not domain or not titles:
+        if not domain:
             return {}
         filters = [
             {"field": "experience.employment_details.current.company_website_domain", "type": "=", "value": domain}
@@ -76,8 +76,10 @@ class Crustdata:
             "fields": ["basic_profile.name", "basic_profile.headline",
                        "experience.employment_details.current.name",
                        "experience.employment_details.current.title",
-                       "social_handles.professional_network_identifier.profile_url"],
-            "limit": min(limit, 4),
+                       "experience.employment_details.current.company_website",
+                       "social_handles.professional_network_identifier.profile_url",
+                       "crustdata_person_id"],
+            "limit": min(limit, 20),
         }
 
     def people_search(self, domain: str, titles: list[str], limit: int = 2) -> list[dict]:
@@ -86,6 +88,74 @@ class Crustdata:
             return []
         response = self.post("/person/search", request)
         return response.get("profiles", [])
+
+    @staticmethod
+    def people_search_verified_request(domain: str, titles: list[str],
+                                       limit: int = 12) -> dict:
+        """Use the indexed *current-role* email-verified flag to raise yield.
+
+        This flag is a search hint, not delivery validation: still call
+        /person/contact/enrich and require status=deliverable.
+        """
+        request = Crustdata.people_search_request(domain, titles, limit)
+        if not request:
+            return {}
+        condition = {
+            "field": "experience.employment_details.current.business_email_verified",
+            "type": "=", "value": True,
+        }
+        request["filters"]["conditions"].append(condition)
+        return request
+
+    def people_search_verified(self, domain: str, titles: list[str],
+                               limit: int = 12) -> list[dict]:
+        request = self.people_search_verified_request(domain, titles, limit)
+        if not request:
+            return []
+        response = self.post("/person/search", request)
+        return response.get("profiles", [])
+
+    def business_email_enrich_batch(self, profile_urls: list[str]) -> dict[str, list[dict]]:
+        """Up to 25 official LinkedIn profile identifiers per paid request.
+
+        The response is keyed by 'matched_on', not by input position.
+        Missing profiles map to an empty list, never to a guessed address.
+        """
+        urls = []
+        for url in profile_urls:
+            parsed = urlsplit(url)
+            if (parsed.scheme == "https" and parsed.hostname in
+                    ("linkedin.com", "www.linkedin.com") and
+                    parsed.path.startswith("/in/")):
+                normalized = "https://www.linkedin.com" + parsed.path.rstrip("/")
+                if normalized not in urls:
+                    urls.append(normalized)
+        if not urls:
+            return {}
+        if len(urls) > 25:
+            raise ValueError("Crustdata contact enrichment supports at most 25 identifiers")
+        response = self.post("/person/contact/enrich", {
+            "professional_network_profile_urls": urls,
+            "fields": ["contact.business_emails"],
+        })
+        if not isinstance(response, list):
+            raise CrustdataError("Unexpected batch business-email enrichment response")
+        found = {url: [] for url in urls}
+        for item in response:
+            if not isinstance(item, dict):
+                continue
+            matched = str(item.get("matched_on") or "")
+            parsed = urlsplit(matched)
+            identity = ("https://www.linkedin.com" + parsed.path.rstrip("/")
+                        if parsed.path.startswith("/in/") else "")
+            if identity not in found:
+                continue
+            for match in item.get("matches") or []:
+                emails = ((match.get("person_data") or {}).get("contact") or {}).get(
+                    "business_emails") or []
+                found[identity].extend(record for record in emails
+                                       if isinstance(record, dict))
+        return found
 
     def business_email_enrich(self, profile_url: str) -> list[dict]:
         """Use ONLY the documented contact subfield to minimize Crustdata credits.
