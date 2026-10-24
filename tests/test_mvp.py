@@ -73,6 +73,24 @@ def test_crustdata_request_shapes(monkeypatch):
     assert calls[1][1]["filters"]["conditions"][1]["op"] == "or"
 
 
+def test_qwen_adapter(monkeypatch):
+    import sys
+    from types import ModuleType
+    from app.qwen_runtime import generate_json, _json_object, QwenResponseError
+    assert _json_object("thinking...\\n```json\\n{\\"score\\": 5}\\n```") == {"score": 5}
+    class FakeModel:
+        def chat(self, messages, stream):
+            assert stream is False
+            assert messages[1]["role"] == "user"
+            return [{"role": "assistant", "content": '{"query":"software firms"}'}]
+    package = ModuleType("qwen_agent")
+    module = ModuleType("qwen_agent.llm")
+    module.get_chat_model = lambda cfg: FakeModel()
+    monkeypatch.setitem(sys.modules, "qwen_agent", package)
+    monkeypatch.setitem(sys.modules, "qwen_agent.llm", module)
+    assert generate_json("Plan", {"x": 1}) == {"query": "software firms"}
+
+
 def test_booking_signature_and_matching(client, token, monkeypatch):
     campaign_id = create(client, token)
     client.post(f"/campaigns/{campaign_id}/run", data={"csrf": token})
