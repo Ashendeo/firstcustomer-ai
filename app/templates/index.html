@@ -21,10 +21,10 @@
         <label>Buyer titles (comma-separated)<input name="buyer_titles" value="Head of HR,HR Director,Employee Engagement"></label>
       </div>
       <div class="two">
-        <label>Minimum employees (optional)<input name="min_headcount" type="number" min="0" value="500"></label>
-        <label>Maximum employees (optional)<input name="max_headcount" type="number" min="0" value="5000"></label>
+        <label>Minimum annual revenue USD (optional)<input name="min_revenue_usd" type="number" min="0" step="1000000" value="0"></label>
+        <label>Maximum annual revenue USD (optional)<input name="max_revenue_usd" type="number" min="0" step="1000000" value="0"></label>
       </div>
-      <p class="hint">Headcount fields add premium Crustdata search charges in live mode.</p>
+      <p class="hint">Revenue ranges are evaluated from estimated annual USD revenue returned by company enrichment; unavailable revenue receives no scale-fit credit.</p>
       <label>Calendly event URL (optional)<input name="booking_url" type="url" placeholder="https://calendly.com/your-team/15min"></label>
       <input type="hidden" name="start_discovery" value="true">
       <p class="hint">Submitting starts the research workflow immediately. Live mode may incur Crustdata company-enrichment and Brave web-search charges; completed calls are checkpointed.</p>
