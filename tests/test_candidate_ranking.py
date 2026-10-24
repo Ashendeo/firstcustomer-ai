@@ -222,3 +222,21 @@ def test_zero_from_crustdata_is_not_reported_as_ranking_filter(client, token, mo
         assert summary.details["stage2_ranked"] == 0
     page = client.get(f"/campaigns/{cid}")
     assert "Crustdata Company Search returned zero candidates" in page.text
+
+
+def test_existing_campaign_exposes_historical_dropped_results_without_refetch(
+        client, token):
+    cid = _campaign(client, token)
+    with SessionLocal() as db:
+        db.add(AuditEvent(campaign_id=cid, action="candidate_search_prioritization",
+                          details={"candidates": [
+                              {"company": "One", "provider_rank": 1},
+                              {"company": "Two", "provider_rank": 2}]}))
+        db.add(AuditEvent(campaign_id=cid, action="candidate_enriched_ranking",
+                          details={"candidates": [{"company": "One", "rank": 1}]}))
+        db.commit()
+    page = client.get(f"/campaigns/{cid}")
+    assert page.status_code == 200
+    assert "Historical campaign" in page.text
+    assert "1 candidates appeared in Stage 1 but not Stage 2" in page.text
+    # No Crustdata imports or API calls are needed to render the saved history.
