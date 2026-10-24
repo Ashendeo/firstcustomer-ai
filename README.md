@@ -263,6 +263,81 @@ For existing campaign leads, use **Re-score saved evidence (no credits)** while 
 
 Run `alembic upgrade head` (revision `0004_seller_research`) before restarting FastAPI. It adds seller identity fields and allows nullable fit scores. Back up your SQLite database first.
 
+## Two-stage company ranking and reusable market skills
+
+**Company-name-first campaign creation**: the UI looks up the seller's name
+using Crustdata hybrid Company Search, shows up to five possible business
+identities, and allows the operator to select the correct company. Product,
+ideal customer, and buyer-role suggestions are prefilled and **editable**.
+A lookup for the same normalized seller name is globally cached, with a
+write-ahead record so network timeouts are not silently retried.
+
+**One market skill per seller domain and product**: the `market_playbooks`
+table stores a versioned, evidence-backed B2B buying rubric, selected market,
+buyer committee (economic buyer, problem owner, technical evaluator, and
+functional champion when applicable) and available web research. Additional
+campaigns using the same seller and product reuse this record, instead of
+re-running the paid company/market research. A changed product gets a new
+playbook; unknown or interrupted results are NOT silently replayed.
+
+**Two real ranking stages before contacting prospects**:
+1. Crustdata semantic/hybrid `/company/search` returns relevance-ordered
+   companies. Ranked search does not expose a confidence score or accept
+   `sorts`. We assign a transparent ordinal relevance index, then combine
+   **70% provider-order index + 30% early evidence score**. This first-stage
+   priority controls which candidates get the limited advanced enrichment
+   budget. Both signals are heuristic indices, NOT conversion probabilities.
+2. Rich `/company/enrich` results can include `taxonomy`, `revenue`,
+   `funding`, `hiring`, `news`, `locations`, and `people`.
+   Optional `technographics` requires `CRUSTDATA_INCLUDE_TECHNOGRAPHICS=true`.
+   All requests are separately checkpointed and may incur per-company charges.
+   After enrichment, companies are **re-ranked by their cached market skill's
+   observable criteria**; first-stage index breaks ties. Only then does the
+   worker spend the people/contact-search budget. The candidate report
+   includes an initial ranking, post-enrichment ranking, and final outcomes
+   (including companies skipped because they have no deliverable business
+   email). A skipped candidate does **not** become a Lead.
+
+**Revenue instead of headcount**: the scale criterion uses Crustdata's
+estimated annual USD revenue, including nested `revenue.estimated.lower_bound_usd`
+and `upper_bound_usd`. Missing revenue gets no financial-scale points;
+overlapping broad estimates get partial credit. Estimated revenue is NOT a
+verified financial statement. The 75/100 minimum outreach score remains a
+policy threshold, not a purchase-probability estimate.
+
+**Automatically inferred contact roles**: buyer titles are inferred from
+the seller's product and customer problem and saved in the market skill.
+Candidates are ranked against their current job titles and the inferred
+budget/functional/technical ownership. These are useful hypotheses, not
+proof of purchasing authority.
+
+**Contact gating**: `/person/contact/enrich` must return an email with status
+`deliverable` and the prospect's exact business domain before a new Lead is
+persisted. Otherwise the company is kept as a skipped candidate in the audit
+report. Demo mode uses clearly fictional `example.com` addresses and cannot
+send real prospect emails. The normal contact-enrichment and email-sending
+policy still applies.
+
+Useful `.env` settings:
+```dotenv
+MAX_COMPANIES=5
+MAX_PROSPECT_ENRICHMENTS=5
+MAX_PEOPLE_SEARCHES=3
+MAX_CONTACT_ENRICHMENTS=5
+CRUSTDATA_INCLUDE_TECHNOGRAPHICS=false
+```
+
+These are **limits on billable operations**, not guaranteed counts. All
+provider calls remain checkpointed per campaign, and shared market research
+is cached across campaigns. Most internet data and buying signals are noisy:
+the ranking is a transparent heuristic, not a prediction trained on closed
+deals. Old campaigns' saved leads/scores are not automatically altered.
+
+After a direct code update, run `alembic upgrade head` to apply revisions
+`0005_market_playbooks`, `0006_revenue_criteria`, and `0007_company_lookup`.
+Back up SQLite first. No PR is required; the user can update their
+Windows checkout via `git pull origin main` once main is pushed.
+
 ## Optional email sending
 
 Configure a domain with [Resend](https://resend.com/docs) and set:
