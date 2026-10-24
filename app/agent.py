@@ -8,7 +8,7 @@ from . import settings
 from .crustdata import Crustdata, Crustdata as RequestBuilder
 from .db import SessionLocal
 from .models import Campaign, Lead, AuditEvent
-from .checkpoints import checkpointed, fingerprint, CheckpointNeedsReview, get_checkpoint
+from .checkpoints import checkpointed, checkpointed_parallel, fingerprint, CheckpointNeedsReview, get_checkpoint
 from .discovery_trace import search_trace
 from .scoring import score_company
 from .seller_research import make_research_plan
@@ -16,6 +16,7 @@ from .market_skill import get_market_playbook, prioritize_contacts, contact_role
 from .market_scoring import score_market_fit
 from .candidate_ranking import prioritize_companies, report_priorities
 from .outreach import choose_verified_email
+from .contact_discovery import discover_contact
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +197,8 @@ def run_campaign(campaign_id: str):
                 company_was_cached, demo=settings.DEMO_MODE))
             db.commit()
             seen = set()
-            contact_attempts = 0
+            contact_budget = {"used": 0}
+            fallback_budget = {"used": 0}
             skill = (research.get("market_skill") or {}) if c.seller_domain else {}
             prioritized = prioritize_companies(c, companies, skill)
             audit(db, c.id, "candidate_search_prioritization", details={
@@ -209,6 +211,37 @@ def run_campaign(campaign_id: str):
             # domain-specific evidence score BEFORE spending on people/contact.
             # The preliminary Crustdata relevance order remains an explicit
             # tie-breaker and is stored in the report.
+            # Prefetch the expensive company-enrichment requests concurrently.
+            # Unique database claims are persisted before worker threads start;
+            # the session is never shared with a provider worker.
+            enrich_jobs = []
+            enrich_was_cached = {}
+            planned_domains = set()
+            enrich_fields = RequestBuilder.advanced_enrich_fields()
+            for candidate in prioritized:
+                item = candidate["company"]
+                basic = item.get("basic_info") or {}
+                company_id = str(item.get("crustdata_company_id") or "")
+                company_name = str(basic.get("name") or item.get("name") or "").strip()
+                domain = str(basic.get("primary_domain") or "").lower().removeprefix("www.")[:180]
+                if (settings.DEMO_MODE or not company_name and not company_id
+                        or not domain or domain == c.seller_domain.lower()
+                        or domain in planned_domains
+                        or len(planned_domains) >= settings.MAX_PROSPECT_ENRICHMENTS):
+                    continue
+                planned_domains.add(domain)
+                key = "prospect_enrich_advanced:" + fingerprint({"identity": domain})[:32]
+                previous = get_checkpoint(db, c.id, key)
+                enrich_was_cached[key] = bool(previous and previous.status == "complete")
+                enrich_jobs.append((
+                    key,
+                    {"revision": "prospect-advanced-v1", "domain": domain,
+                     "fields": enrich_fields},
+                    lambda domain=domain: api.company_enrich_advanced(domain),
+                ))
+            enrich_results = checkpointed_parallel(
+                db, c.id, enrich_jobs, max_workers=settings.API_CONCURRENCY,
+            )
             enriched_candidates = []
             seen_domains = set()
             enrichment_attempts = 0
@@ -233,25 +266,22 @@ def run_campaign(campaign_id: str):
                 if not drop_reason:
                     seen_domains.add(identity)
                 discovery_key = fingerprint({"identity": identity})
-                if (not drop_reason and not settings.DEMO_MODE and domain
-                        and enrichment_attempts < settings.MAX_PROSPECT_ENRICHMENTS):
+                enrich_key = "prospect_enrich_advanced:" + fingerprint(
+                    {"identity": domain})[:32]
+                if not drop_reason and enrich_key in enrich_results:
                     enrichment_attempts += 1
-                    key = "prospect_enrich_advanced:" + discovery_key[:32]
-                    previous = get_checkpoint(db, c.id, key)
-                    was_cached = bool(previous and previous.status == "complete")
-                    fields = RequestBuilder.advanced_enrich_fields()
-                    enriched = checkpointed(
-                        db, c.id, key,
-                        {"revision": "prospect-advanced-v1", "domain": domain,
-                         "fields": fields},
-                        lambda domain=domain: api.company_enrich_advanced(domain),
-                    )
+                    enriched = enrich_results[enrich_key]
+                    was_cached = enrich_was_cached[enrich_key]
                     if enriched:
-                        company = {**company, **enriched,
-                                   "basic_info": {**info, **(enriched.get("basic_info") or {})}}
+                        company = {
+                            **company, **enriched,
+                            "basic_info": {
+                                **info, **(enriched.get("basic_info") or {}),
+                            },
+                        }
                     audit(db, c.id, "crustdata_prospect_enrichment", details={
                         "domain": domain, "from_checkpoint": was_cached,
-                        "requested_fields": fields,
+                        "requested_fields": enrich_fields,
                         "returned_sections": sorted(enriched.keys()),
                         "match_found": bool(enriched),
                         "provider_calls_this_run": 0 if was_cached else 1,
@@ -294,6 +324,30 @@ def run_campaign(campaign_id: str):
             })
             db.commit()
 
+            people_jobs = []
+            people_was_cached = {}
+            for index, item in enumerate(enriched_candidates):
+                if index >= settings.MAX_PEOPLE_SEARCHES or item["contact_block_reason"]:
+                    continue
+                domain = str((item["company"].get("basic_info") or {}).get("primary_domain") or "").lower().removeprefix("www.")[:180]
+                if not domain and not settings.DEMO_MODE:
+                    continue
+                key = "people:" + item["discovery_key"][:32]
+                previous = get_checkpoint(db, c.id, key)
+                people_was_cached[key] = bool(previous and previous.status == "complete")
+                inputs = {"revision": "people-search-v1", "demo": settings.DEMO_MODE,
+                          "domain": domain, "titles": plan["titles"],
+                          "limit": settings.PRIMARY_PEOPLE_RESULTS}
+                operation = (
+                    (lambda index=index: [DEMO_PEOPLE[index % len(DEMO_PEOPLE)]])
+                    if settings.DEMO_MODE else
+                    (lambda domain=domain: api.people_search(
+                        domain, plan["titles"], limit=settings.PRIMARY_PEOPLE_RESULTS))
+                )
+                people_jobs.append((key, inputs, operation))
+            primary_people_results = checkpointed_parallel(
+                db, c.id, people_jobs, max_workers=settings.API_CONCURRENCY,
+            )
             candidate_outcomes = []
             # A candidate becomes a Lead ONLY after verified business-email
             # enrichment. Even strong company fit alone is not contactability.
@@ -335,90 +389,75 @@ def run_campaign(campaign_id: str):
                     })
                     continue
 
-                people = []
-                people_search_attempted = i < settings.MAX_PEOPLE_SEARCHES and (settings.DEMO_MODE or bool(domain))
+                people_key = "people:" + discovery_key[:32]
+                people_search_attempted = people_key in primary_people_results
+                people = primary_people_results.get(people_key, [])
                 if people_search_attempted:
-                    people_key = f"people:{discovery_key[:32]}"
-                    old = get_checkpoint(db, c.id, people_key)
-                    people_was_cached = bool(old and old.status == "complete")
-                    people_request = RequestBuilder.people_search_request(
-                        domain, plan["titles"], limit=4)
-                    people = checkpointed(
-                        db, c.id, people_key,
-                        {"revision": "people-search-v1", "demo": settings.DEMO_MODE,
-                         "domain": domain, "titles": plan["titles"], "limit": 4},
-                        lambda: ([DEMO_PEOPLE[i % len(DEMO_PEOPLE)]]
-                                 if settings.DEMO_MODE else
-                                 api.people_search(domain, plan["titles"], limit=4)),
-                    )
+                    request = RequestBuilder.people_search_request(
+                        domain, plan["titles"], limit=settings.PRIMARY_PEOPLE_RESULTS)
                     audit(db, c.id, "crustdata_people_query", details={
-                        **search_trace("/person/search", people_request, people,
-                                       people_was_cached, demo=settings.DEMO_MODE),
+                        **search_trace(
+                            "/person/search", request, people,
+                            people_was_cached[people_key],
+                            demo=settings.DEMO_MODE,
+                        ),
                         "company": company_name, "domain": domain,
                     })
                     db.commit()
 
-                if skill and people:
-                    people = prioritize_contacts(people, skill)
-                candidate_score = (score_market_fit(c, company, people[0] if people else None, skill)
-                                   if skill else score_company(c, company, people[0] if people else None))
-                person = None
-                verified_email = ""
-                valid_profile_urls = 0
-                email_enrichment_attempted = False
-                if settings.DEMO_MODE and people:
-                    # Reserved example.com fixture, never a deliverable live contact.
-                    person = people[0]
-                    verified_email = f"fictional{i+1}@example.com"
+                contact = None
+                if settings.DEMO_MODE:
+                    if skill and people:
+                        people = prioritize_contacts(people, skill)
+                    person = people[0] if people else None
+                    verified_email = f"fictional{i+1}@example.com" if person else ""
+                    best_person = person
                 else:
-                    for candidate in people:
-                        social = ((candidate.get("social_handles") or {}).get(
-                            "professional_network_identifier") or {})
-                        profile_url = str(social.get("profile_url") or "")
-                        if not profile_url:
-                            continue
-                        valid_profile_urls += 1
-                        if contact_attempts >= settings.MAX_CONTACT_ENRICHMENTS:
-                            continue
-                        contact_attempts += 1
-                        email_enrichment_attempted = True
-                        key = "candidate_email:" + discovery_key[:24] + ":" + fingerprint(
-                            {"profile": profile_url})[:16]
-                        prior = get_checkpoint(db, c.id, key)
-                        cached = bool(prior and prior.status == "complete")
-                        records = checkpointed(
-                            db, c.id, key,
-                            {"revision": "candidate-email-v1", "profile": profile_url,
-                             "company_domain": domain, "field": "contact.business_emails"},
-                            lambda profile_url=profile_url: api.business_email_enrich(profile_url),
-                        )
-                        email = choose_verified_email(records, domain)
-                        audit(db, c.id, "crustdata_contact_enrichment", details={
-                            "company": company_name, "domain": domain,
-                            "from_checkpoint": cached,
-                            "deliverable_company_email_found": bool(email),
-                            "provider_calls_this_run": 0 if cached else 1,
-                            "requested_fields": ["contact.business_emails"],
-                            # No PII values or API keys in execution history.
-                        })
-                        db.commit()
-                        if email:
-                            verified_email = email
-                            person = candidate
-                            break
+                    contact = checkpointed(
+                        db, c.id, "contact_discovery_result:" + discovery_key[:32],
+                        {"revision": "contact-discovery-v2",
+                         "domain": domain,
+                         "people_hash": fingerprint(people),
+                         "market_skill": skill.get("version", "none")},
+                        lambda: discover_contact(
+                            db, c.id, domain, discovery_key, people, skill, api,
+                            audit, contact_budget, fallback_budget,
+                        ),
+                    )
+                    person = contact["person"]
+                    verified_email = contact["email"]
+                    best_person = contact["best_person"]
+                    # Always surface the best potential buying-committee contact,
+                    # but never create an outreach Lead for an unverified email.
+                    audit(db, c.id, "contact_candidates_ranked", details={
+                        "company": company_name, "domain": domain,
+                        "candidates": contact["candidates"],
+                        "people_considered": contact["people_considered"],
+                        "fallback_profiles": contact["fallback_profiles"],
+                        "email_verified": bool(verified_email),
+                        "contact_enrichment_calls_this_run": contact_budget["used"],
+                        "fallback_people_search_calls_this_run": fallback_budget["used"],
+                    })
+                    db.commit()
+                candidate_score = (
+                    score_market_fit(c, company, person or best_person, skill)
+                    if skill else score_company(c, company, person or best_person)
+                )
                 if not verified_email:
                     contact_reason = (
-                        "people_search_budget_exhausted" if not people_search_attempted
-                        else "no_contact_profiles_returned" if not people
-                        else "no_professional_profile_urls" if valid_profile_urls == 0
-                        else "contact_enrichment_budget_exhausted" if not email_enrichment_attempted
-                        else "no_matching_deliverable_business_email"
+                        "people_search_budget_exhausted" if not people_search_attempted and
+                        not (contact and contact["fallback_profiles"]) else
+                        (contact["reason"] if contact else "no_contact_profiles_returned")
                     )
+                    suggested = (contact["candidates"][0] if contact and
+                                 contact["candidates"] else {})
                     candidate_outcomes.append({
                         "company": company_name, "domain": domain,
                         "score": candidate_score.get("total"),
                         "status": "skipped_no_verified_business_email",
                         "reason": contact_reason,
+                        "suggested_contact": suggested,
+                        "contact_candidates": (contact["candidates"] if contact else [])[:4],
                         "provider_rank": prioritized_item["provider_rank"],
                         "first_stage_index": prioritized_item["discovery_priority"],
                     })
@@ -426,7 +465,9 @@ def run_campaign(campaign_id: str):
                         "company": company_name, "domain": domain,
                         "reason": contact_reason,
                         "candidate_fit_score": candidate_score.get("total"),
+                        "best_contact": suggested,
                         "max_contact_enrichments": settings.MAX_CONTACT_ENRICHMENTS,
+                        "max_fallback_searches": settings.MAX_PEOPLE_FALLBACK_SEARCHES,
                     })
                     db.commit()
                     continue
@@ -536,6 +577,9 @@ def run_campaign(campaign_id: str):
                 "advanced_enrichments_attempted": enrichment_attempts,
                 "people_search_limit": settings.MAX_PEOPLE_SEARCHES,
                 "contact_enrichment_limit": settings.MAX_CONTACT_ENRICHMENTS,
+                "contact_enrichments_attempted": contact_budget["used"],
+                "fallback_people_searches_attempted": fallback_budget["used"],
+                "fallback_people_search_limit": settings.MAX_PEOPLE_FALLBACK_SEARCHES,
                 "new_leads": sum(item["status"] == "lead_created" for item in candidate_outcomes),
                 "skipped_or_existing": sum(item["status"] != "lead_created" for item in candidate_outcomes),
                 "outcome_counts": {
