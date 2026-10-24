@@ -8,7 +8,7 @@ from . import settings
 from .crustdata import Crustdata, Crustdata as RequestBuilder
 from .db import SessionLocal
 from .models import Campaign, Lead, AuditEvent
-from .checkpoints import checkpointed, fingerprint, CheckpointNeedsReview, get_checkpoint
+from .checkpoints import checkpointed, checkpointed_parallel, fingerprint, CheckpointNeedsReview, get_checkpoint
 from .discovery_trace import search_trace
 from .scoring import score_company
 from .seller_research import make_research_plan
