@@ -39,6 +39,12 @@
   <h2>How candidates are sorted — two stages</h2>
   {% if ranking_summary %}
   <p><strong>Search returned {{ ranking_summary.company_search_results }} companies → Stage 1 ranked {{ ranking_summary.stage1_ranked }} → Stage 2 retained {{ ranking_summary.stage2_ranked }} → {{ ranking_summary.new_leads }} new verified-contact leads.</strong></p>
+  {% if ranking_summary.legacy_snapshot %}
+  <p class="hint">Historical campaign: these counts were reconstructed from existing audit records. No new API calls were made.</p>
+  {% if ranking_summary.legacy_disappeared %}
+  <div class="notice">{{ ranking_summary.legacy_disappeared }} candidates appeared in Stage 1 but not Stage 2 in this older run. The previous implementation could silently drop companies with missing identities or domains. The fix applies to new execution runs; viewing this report does not repeat paid API calls.</div>
+  {% endif %}
+  {% endif %}
   {% if ranking_summary.search_empty %}
   <div class="notice">Crustdata Company Search returned zero candidates. Ranking did not filter anything. Check the generated search query and geographic filter in Execution Trace; changing the query requires a new search, which may incur an API charge.</div>
   {% elif ranking_summary.new_leads == 0 %}
