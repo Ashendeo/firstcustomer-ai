@@ -60,7 +60,7 @@ class Crustdata:
 
     @staticmethod
     def people_search_request(domain: str, titles: list[str], limit: int = 2) -> dict:
-        if not domain or not titles:
+        if not domain:
             return {}
         filters = [
             {"field": "experience.employment_details.current.company_website_domain", "type": "=", "value": domain}
@@ -76,12 +76,40 @@ class Crustdata:
             "fields": ["basic_profile.name", "basic_profile.headline",
                        "experience.employment_details.current.name",
                        "experience.employment_details.current.title",
-                       "social_handles.professional_network_identifier.profile_url"],
-            "limit": min(limit, 4),
+                       "experience.employment_details.current.company_website",
+                       "social_handles.professional_network_identifier.profile_url",
+                       "contact.has_business_email"],
+            "limit": min(limit, 20),
         }
 
     def people_search(self, domain: str, titles: list[str], limit: int = 2) -> list[dict]:
         request = self.people_search_request(domain, titles, limit)
+        if not request:
+            return []
+        response = self.post("/person/search", request)
+        return response.get("profiles", [])
+
+    @staticmethod
+    def people_search_verified_request(domain: str, titles: list[str],
+                                       limit: int = 12) -> dict:
+        """Use the indexed *current-role* email-verified flag to raise yield.
+
+        This flag is a search hint, not delivery validation: still call
+        /person/contact/enrich and require status=deliverable.
+        """
+        request = Crustdata.people_search_request(domain, titles, limit)
+        if not request:
+            return {}
+        condition = {
+            "field": "experience.employment_details.current.business_email_verified",
+            "type": "=", "value": True,
+        }
+        request["filters"]["conditions"].append(condition)
+        return request
+
+    def people_search_verified(self, domain: str, titles: list[str],
+                               limit: int = 12) -> list[dict]:
+        request = self.people_search_verified_request(domain, titles, limit)
         if not request:
             return []
         response = self.post("/person/search", request)
