@@ -11,7 +11,10 @@ from .models import Campaign, Lead, AuditEvent
 from .checkpoints import checkpointed, fingerprint, CheckpointNeedsReview, get_checkpoint
 from .discovery_trace import search_trace
 from .scoring import score_company
-from .seller_research import research_seller, make_research_plan
+from .seller_research import make_research_plan
+from .market_skill import get_market_playbook
+from .market_scoring import score_market_fit
+from .outreach import choose_verified_email
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +114,7 @@ def run_campaign(campaign_id: str):
             if c.seller_domain:
                 # Seller research is the *first* execution stage, ahead of the
                 # prospect plan or Crustdata company discovery.
-                research_data = research_seller(db, c, audit)
+                research_data, market_cached = get_market_playbook(db, c, audit, llm_json)
                 research_was_cached = get_checkpoint(db, c.id, "seller_research")
                 try:
                     strategy = checkpointed(
@@ -190,100 +193,149 @@ def run_campaign(campaign_id: str):
                 company_was_cached, demo=settings.DEMO_MODE))
             db.commit()
             seen = set()
-            for i, company in enumerate(companies):
+            contact_attempts = 0
+            skill = (research.get("market_skill") or {}) if c.seller_domain else {}
+            # A candidate becomes a Lead ONLY after verified business-email
+            # enrichment. Even a strong company fit alone is not contactability.
+            for i, initial_company in enumerate(companies):
+                company = initial_company
                 info = company.get("basic_info") or {}
                 company_name = str(info.get("name") or "")[:200]
-                domain = str(info.get("primary_domain") or "")[:180]
+                domain = str(info.get("primary_domain") or "").lower().removeprefix("www.")[:180]
                 company_id = str(company.get("crustdata_company_id") or "")[:80]
-                if not company_name:
+                if not company_name or (not settings.DEMO_MODE and not domain):
                     continue
-                if c.seller_domain and domain.lower().removeprefix("www.") == c.seller_domain.lower():
-                    continue  # Never pitch the seller's own company.
-                identity = (domain.lower() or company_id or company_name.lower())
+                if c.seller_domain and domain == c.seller_domain.lower():
+                    continue
+                identity = domain or company_id or company_name.lower()
                 discovery_key = fingerprint({"identity": identity})
                 if discovery_key in seen:
                     continue
                 seen.add(discovery_key)
 
-                # Existing leads are never deleted, re-created, or redrafted
-                # if already completed, manually edited, approved, or sent.
-                prior_leads = db.scalars(
-                    select(Lead).where(Lead.campaign_id == c.id)
-                ).all()
-                lead = next((l for l in prior_leads if (
-                    l.discovery_key == discovery_key or
-                    (l.discovery_key is None and (
-                        (domain and l.domain.lower() == domain.lower()) or
-                        (company_id and l.company_id == company_id)
+                prior_leads = db.scalars(select(Lead).where(Lead.campaign_id == c.id)).all()
+                lead = next((item for item in prior_leads if (
+                    item.discovery_key == discovery_key or
+                    (item.discovery_key is None and (
+                        (domain and item.domain.lower() == domain) or
+                        (company_id and item.company_id == company_id)
                     ))
                 )), None)
                 if lead and (lead.draft_body or lead.status != "draft"):
                     continue
 
-                # Search only returns a sparse profile for many companies.
-                # Enrich up to the configured limit to obtain actual industry /
-                # descriptive evidence rather than manufacturing a 0 score.
-                existing_info = company.get("basic_info") or {}
-                has_description = any(existing_info.get(field) for field in (
-                    "description", "headline", "tagline", "industries", "industry", "specialties"))
-                if (not settings.DEMO_MODE and not has_description and domain
-                        and i < settings.MAX_PROSPECT_ENRICHMENTS):
-                    enrich_key = "prospect_enrich:" + discovery_key[:32]
-                    prior = get_checkpoint(db, c.id, enrich_key)
-                    was_cached = bool(prior and prior.status == "complete")
+                # Explicit budget: enrich up to N shortlisted companies even
+                # when their search rows contain a basic description.
+                if (not settings.DEMO_MODE and domain and
+                        i < settings.MAX_PROSPECT_ENRICHMENTS):
+                    key = "prospect_enrich_advanced:" + discovery_key[:32]
+                    old = get_checkpoint(db, c.id, key)
+                    was_cached = bool(old and old.status == "complete")
+                    fields = RequestBuilder.advanced_enrich_fields()
                     enriched = checkpointed(
-                        db, c.id, enrich_key,
-                        {"revision": "prospect-company-enrich-v1",
-                         "domain": domain,
-                         "fields": ["basic_info", "headcount", "locations", "hiring"]},
-                        lambda: api.company_enrich(domain),
+                        db, c.id, key,
+                        {"revision": "prospect-advanced-v1", "domain": domain,
+                         "fields": fields},
+                        lambda: api.company_enrich_advanced(domain),
                     )
                     if enriched:
                         company = {**company, **enriched,
-                                   "basic_info": {**existing_info,
-                                                  **(enriched.get("basic_info") or {})}}
+                                   "basic_info": {**info, **(enriched.get("basic_info") or {})}}
+                        info = company["basic_info"]
                     audit(db, c.id, "crustdata_prospect_enrichment", details={
                         "domain": domain, "from_checkpoint": was_cached,
-                        "attributes": sorted(enriched.keys()),
+                        "requested_fields": fields,
+                        "returned_sections": sorted(enriched.keys()),
                         "match_found": bool(enriched),
                         "provider_calls_this_run": 0 if was_cached else 1,
                     })
                     db.commit()
+
                 people = []
-                if i < settings.MAX_PEOPLE_SEARCHES:
-                    if settings.DEMO_MODE or domain:
-                        people_key = f"people:{discovery_key[:32]}"
-                        old_checkpoint = get_checkpoint(db, c.id, people_key)
-                        people_was_cached = bool(old_checkpoint and old_checkpoint.status == "complete")
-                        people_request = RequestBuilder.people_search_request(
-                            domain, plan["titles"], limit=2)
-                        people = checkpointed(
-                            db, c.id, people_key,
-                            {"revision": "people-search-v1",
-                             "demo": settings.DEMO_MODE, "domain": domain,
-                             "titles": plan["titles"], "limit": 2},
-                            lambda: ([DEMO_PEOPLE[i % len(DEMO_PEOPLE)]]
-                                     if settings.DEMO_MODE else
-                                     api.people_search(domain, plan["titles"], limit=2)),
+                if i < settings.MAX_PEOPLE_SEARCHES and (settings.DEMO_MODE or domain):
+                    people_key = f"people:{discovery_key[:32]}"
+                    old = get_checkpoint(db, c.id, people_key)
+                    people_was_cached = bool(old and old.status == "complete")
+                    people_request = RequestBuilder.people_search_request(
+                        domain, plan["titles"], limit=2)
+                    people = checkpointed(
+                        db, c.id, people_key,
+                        {"revision": "people-search-v1", "demo": settings.DEMO_MODE,
+                         "domain": domain, "titles": plan["titles"], "limit": 2},
+                        lambda: ([DEMO_PEOPLE[i % len(DEMO_PEOPLE)]]
+                                 if settings.DEMO_MODE else
+                                 api.people_search(domain, plan["titles"], limit=2)),
+                    )
+                    audit(db, c.id, "crustdata_people_query", details={
+                        **search_trace("/person/search", people_request, people,
+                                       people_was_cached, demo=settings.DEMO_MODE),
+                        "company": company_name, "domain": domain,
+                    })
+                    db.commit()
+
+                candidate_score = (score_market_fit(c, company, people[0] if people else None, skill)
+                                   if skill else score_company(c, company, people[0] if people else None))
+                person = None
+                verified_email = ""
+                if settings.DEMO_MODE and people:
+                    # Reserved example.com fixture, never a deliverable live contact.
+                    person = people[0]
+                    verified_email = f"fictional{i+1}@example.com"
+                else:
+                    for candidate in people:
+                        social = ((candidate.get("social_handles") or {}).get(
+                            "professional_network_identifier") or {})
+                        profile_url = str(social.get("profile_url") or "")
+                        if not profile_url or contact_attempts >= settings.MAX_CONTACT_ENRICHMENTS:
+                            continue
+                        contact_attempts += 1
+                        key = "candidate_email:" + discovery_key[:24] + ":" + fingerprint(
+                            {"profile": profile_url})[:16]
+                        prior = get_checkpoint(db, c.id, key)
+                        cached = bool(prior and prior.status == "complete")
+                        records = checkpointed(
+                            db, c.id, key,
+                            {"revision": "candidate-email-v1", "profile": profile_url,
+                             "company_domain": domain, "field": "contact.business_emails"},
+                            lambda profile_url=profile_url: api.business_email_enrich(profile_url),
                         )
-                        audit(db, c.id, "crustdata_people_query", details={
-                            **search_trace("/person/search", people_request, people,
-                                           people_was_cached, demo=settings.DEMO_MODE),
+                        email = choose_verified_email(records, domain)
+                        audit(db, c.id, "crustdata_contact_enrichment", details={
                             "company": company_name, "domain": domain,
+                            "from_checkpoint": cached,
+                            "deliverable_company_email_found": bool(email),
+                            "provider_calls_this_run": 0 if cached else 1,
+                            "requested_fields": ["contact.business_emails"],
+                            # No PII values or API keys in execution history.
                         })
                         db.commit()
-                person = people[0] if people else None
+                        if email:
+                            verified_email = email
+                            person = candidate
+                            break
+                if not verified_email:
+                    audit(db, c.id, "candidate_skipped_no_verified_email", details={
+                        "company": company_name, "domain": domain,
+                        "reason": ("no_matching_deliverable_business_email"
+                                   if people else "no_contact_profiles"),
+                        "candidate_fit_score": candidate_score.get("total"),
+                        "max_contact_enrichments": settings.MAX_CONTACT_ENRICHMENTS,
+                    })
+                    db.commit()
+                    continue
+
                 profile = (person or {}).get("basic_profile") or {}
                 roles = (((person or {}).get("experience") or {})
                          .get("employment_details") or {}).get("current") or []
-                title = str((roles[0] if roles else {}).get("title") or "")[:180]
+                title = str((roles[0] if isinstance(roles, list) and roles else {})
+                            .get("title") or "")[:180]
                 social = ((person or {}).get("social_handles") or {}).get(
                     "professional_network_identifier") or {}
                 if lead is None:
                     lead = Lead(
                         campaign_id=c.id, discovery_key=discovery_key,
                         company_id=company_id, company_name=company_name,
-                        domain=domain,
+                        domain=domain, email=verified_email,
                         description=str(info.get("description") or "")[:2000],
                         source="demo" if settings.DEMO_MODE else "crustdata",
                     )
@@ -291,32 +343,34 @@ def run_campaign(campaign_id: str):
                     db.flush()
                 else:
                     lead.discovery_key = discovery_key
+                    lead.email = verified_email
                 lead.person_id = str((person or {}).get("crustdata_person_id") or "")[:80]
                 lead.person_name = str(profile.get("name") or "")[:160]
                 lead.person_title = title
                 lead.person_profile = str(social.get("profile_url") or "")[:1500]
+                lead.fit_score = candidate_score["total"]
+                lead.fit_reason = candidate_score["summary"]
                 lead.evidence = {
+                    **(lead.evidence or {}),
                     "company_record": company, "person_record": person or {},
                     "provider": "DEMO" if settings.DEMO_MODE else "Crustdata",
+                    "scorecard": candidate_score,
+                    "email_verification": ("fictional_demo" if settings.DEMO_MODE
+                                           else "crustdata_deliverable"),
                 }
-                db.commit()  # stable lead ID exists BEFORE any model call
+                db.commit()  # after verified email, before possible Qwen call
 
                 link = safe_booking_link(c.booking_url, c.id, lead.id)
                 analysis = checkpointed(
                     db, c.id, f"evaluation:{discovery_key[:32]}",
-                    {**config, "revision": "evaluation-v1", "product": c.product,
+                    {**config, "revision": "evaluation-v2", "product": c.product,
                      "ideal_customer": c.ideal_customer, "company": company,
-                     "person": person, "booking_link": link},
+                     "person": person, "booking_link": link,
+                     "market_skill": skill.get("version", "legacy-v2")},
                     lambda: evaluate(c, company, person, link),
                 )
-                scorecard = score_company(c, company, person)
-                lead.fit_score = scorecard["total"]
-                # The Qwen-provided number remains a model opinion, not the
-                # explained numerical score. The visible score is the rubric sum.
-                lead.fit_reason = scorecard["summary"]
                 lead.evidence = {
                     **(lead.evidence or {}),
-                    "scorecard": scorecard,
                     "model_assessment": {
                         "model_score": analysis.get("fit_score"),
                         "model_reason": analysis.get("fit_reason", ""),
@@ -325,10 +379,11 @@ def run_campaign(campaign_id: str):
                 lead.draft_subject = analysis["subject"]
                 lead.draft_body = analysis["body"]
                 audit(db, c.id, "lead_drafted", lead.id, {
-                    "score": lead.fit_score, "source": lead.source,
-                    "rubric": "scorecard-v1",
+                    "score": lead.fit_score,
+                    "rubric": candidate_score["version"],
+                    "email_verified": True,
                     "criterion_points": {item["key"]: item["earned"]
-                                         for item in scorecard["criteria"]},
+                                         for item in candidate_score["criteria"]},
                 })
                 db.commit()
 
