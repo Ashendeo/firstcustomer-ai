@@ -78,6 +78,8 @@ def policy_decision(db, campaign: Campaign, lead: Lead,
         return "linkedin_not_supported"
     if lead.source != "crustdata":
         return "not_live_lead"
+    if lead.fit_score is None:
+        return "insufficient_scoring_evidence"
     if lead.fit_score < policy.min_score:
         return "below_fit_threshold"
     if lead.status != "draft":
