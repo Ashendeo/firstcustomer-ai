@@ -109,6 +109,56 @@ Local SQLite runs in Write-Ahead Logging (WAL) mode with a 10-second busy timeou
 
 A persistent lock is returned as a clear HTTP 503 with a retry hint, rather than an uncaught traceback. If you encounter it, close SQLite viewers/editors holding transactions and make sure only one FastAPI instance is running. WAL does **not** allow two writers simultaneously. For production-scale concurrency use PostgreSQL instead of SQLite. The database must live on a local disk; SQLite WAL is unsuitable for most network shares.
 
+## Autonomous first-contact outreach (simulation by default)
+
+The app now supports a **campaign-level authorization** instead of approving every first-contact email. New policies start with `auto_send=true`, `min_score=85`, `daily_limit=10`, and `prepare_linkedin_drafts=false` — but **mode=simulation**, so they cannot send mail until explicitly activated.
+
+The campaign page lets the operator:
+1. Inspect a **read-only simulation** of eligible and held prospects (no Crustdata enrichment, Qwen inference, or Resend calls).
+2. Enter a documented recipient contact basis, verified organization type, reply-to inbox, and real physical sender mailing address.
+3. **Explicitly authorize live operation**, which checks jurisdiction, contact basis, verified webhooks, API configuration, HTTPS public address, and sender details.
+4. Pause sending at any time and trigger the eligible first-contact worker.
+
+The only supported delivery channel is Resend email; no LinkedIn automation or automatic follow-up/reply generation.
+
+### Conservative jurisdiction handling
+
+- United States: explicitly documented US business marketing basis or express consent; truthful subject/sender, sender postal address, operational opt-out link and suppression required.
+- United Kingdom: only expressly consented recipients OR documented corporate-subscriber legitimate-interest assessment plus an operator-verified corporation (not a sole trader). Require a real opt-out and GDPR review.
+- All other locations (including India): **documented express consent** required for live automation in this MVP. This is conservative configuration, not a statement that every country's law requires consent.
+- Unknown jurisdiction, organization type, lawful basis, unverifiable email, or unsupported contact information: **HOLD**.
+
+These are guardrails, **not legal advice or an automatic compliance certification**. The operator remains responsible for contact rights, notice obligations, sending-domain authentication and accurate policy attestations.
+
+### Crustdata work emails
+
+For an eligible score-85+ lead *in live mode only*, the worker requests `POST /person/contact/enrich` with `professional_network_profile_urls` and precisely `fields:["contact.business_emails"]`. This requires Crustdata's contact-enrich permission and is billed **1 credit per matched person**. It accepts only `deliverable` emails matching the *current target company's domain*, never guessed/personal/catch-all/unknown addresses. Each request is checkpointed before dispatch, and uncertain outcomes are not automatically repeated. See https://docs.crustdata.com/person-docs/contact/enrich .
+
+### Live setup
+
+Required environment values:
+```dotenv
+DEMO_MODE=false
+CRUSTDATA_API_KEY=<key-with-contact-enrich-permission>
+RESEND_API_KEY=<key>
+RESEND_WEBHOOK_SECRET=whsec_...
+FROM_EMAIL=Your Business <hello@yourverifieddomain.example>
+PUBLIC_BASE_URL=https://your-public-https-app.example
+CSRF_SECRET=<long-random-secret>
+```
+
+Create Resend webhook endpoint `POST https://YOUR-APP/webhooks/resend` and subscribe to `email.delivered`, `email.bounced`, `email.complained`, `email.suppressed`, `email.failed`, `email.received`, and contact unsubscribes where available. Resend uses signed **Svix** headers; unsigned or replayed messages are rejected. Receiving email requires an inbox/domain configured in Resend and working reply-to routing.
+
+Set an actual verified reply-to inbox and physical sender address in the campaign policy. No fake values will be accepted as sufficient business identity.
+
+The first-contact worker reserves one of **10 globally unique UTC daily slots** before sending, and keeps a per-lead send ledger for deduplication. A timeout or ambiguous provider result is recorded as `uncertain` and never automatically retried. Messages include a public, signed **two-step unsubscribe** link (GET confirms; POST suppresses), avoiding side effects from email scanner link prefetching.
+
+Incoming Resend events are signature-verified, deduplicated and correlated by provider email ID and recipient. Bounces, complaints, and unsubscribe events populate a **global suppression list**. Received email webhooks are metadata-only; the handler separately retrieves the body and conservatively classifies it into `opt_out`, `interested`, or `needs_review`. **No automated replies are sent.** Inbound content is untrusted and never treated as model instructions.
+
+**Scheduling:** Live activation runs the worker if the campaign is already ready. Discovery completion also runs it when the campaign was already authorized. For later days, set a long random `OUTREACH_CRON_SECRET` (24+ characters) and use a trusted external scheduler to POST to `https://YOUR-APP/outreach/tick` with an `X-Outreach-Cron-Secret` header (e.g. daily). Only authorized live campaigns are eligible. Never put the secret in a URL. The scheduler endpoint is disabled until the secret is configured.\n\n**Operational limits:** this is an early-stage single-worker MVP, not a durable scheduled sending system. A run starts after completed discovery (if authorized), or via the campaign page's manual worker action. To process the next day's remaining eligible prospects automatically, wire a durable scheduled worker later. For multi-worker production, add transactional scheduling/claiming and a dedicated queue; rely on PostgreSQL rather than SQLite and audit sender/legal compliance. Rate caps and send ledgers are not a substitute for a campaign-level monetary enrichment budget.
+
+Run database migration `alembic upgrade head` to create the `0003_autonomous_outreach` tables before starting the app.
+
 ## Optional email sending
 
 Configure a domain with [Resend](https://resend.com/docs) and set:

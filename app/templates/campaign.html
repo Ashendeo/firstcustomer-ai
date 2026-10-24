@@ -40,5 +40,66 @@
 </tbody></table></div>
 {% else %}<div class="empty">No checkpointed calls yet.</div>{% endif %}
 </section>
-<section class="panel narrow"><h2>Execution history</h2>{% for e in events %}<div class="history"><span class="dot"></span><div><strong>{{ e.action.replace('_',' ')|title }}</strong><div class="small">{{ e.created_at.strftime('%d %b %Y · %H:%M UTC') }}</div></div></div>{% endfor %}</section>
+<section class="panel">
+  <div class="between"><h2>Autonomous email outreach</h2>
+    <span class="pill {{ 'success' if outreach_policy.mode == 'live' else 'neutral' }}">{{ outreach_policy.mode }}</span>
+  </div>
+  <p class="muted">Policy-driven first contacts. Simulation does not call Crustdata enrichment or Resend. No LinkedIn messaging.</p>
+  <p><strong>Score ≥ {{ outreach_policy.min_score }}</strong> · Maximum {{ outreach_policy.daily_limit }} first contacts/day (also globally capped at 10) · Auto-send {{ 'on' if outreach_policy.auto_send else 'off' }}</p>
+  {% if outreach_policy.mode != 'live' %}
+  <form action="/campaigns/{{ campaign.id }}/outreach/policy" method="post">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label><input type="checkbox" name="auto_send" value="true" {{ 'checked' if outreach_policy.auto_send else '' }}> Enable eligible auto-send when live mode is activated</label>
+    <label>Minimum qualification score (85–100)
+      <input type="number" name="min_score" min="85" max="100" value="{{ outreach_policy.min_score }}" required></label>
+    <label>Maximum first-contact emails per UTC day (1–10)
+      <input type="number" name="daily_limit" min="1" max="10" value="{{ outreach_policy.daily_limit }}" required></label>
+    <label>Documented contact basis
+      <select name="legal_basis">
+        <option value="">Not established — simulation only</option>
+        {% for basis, label in [('express_consent','Documented express consent'),('documented_us_b2b','US B2B basis documented'),('documented_uk_corporate_lia','UK corporate subscriber + legitimate-interest assessment')] %}
+        <option value="{{ basis }}" {{ 'selected' if outreach_policy.legal_basis == basis else '' }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Recipient organization type
+      <select name="organization_type">
+        <option value="">Unknown</option>
+        <option value="corporation" {{ 'selected' if outreach_policy.organization_type == 'corporation' else '' }}>Verified corporate entity</option>
+        <option value="individual" {{ 'selected' if outreach_policy.organization_type == 'individual' else '' }}>Individual / sole trader / unknown</option>
+      </select>
+    </label>
+    <label>Reply-to business inbox
+      <input name="reply_to" type="email" value="{{ outreach_policy.reply_to }}" placeholder="hello@yourcompany.com"></label>
+    <label>Sender physical postal address (required for first-contact email)
+      <textarea name="sender_postal_address" rows="2" placeholder="Your genuine business mailing address">{{ outreach_policy.sender_postal_address }}</textarea></label>
+    <button type="submit">Save simulation policy</button>
+  </form>
+  <form action="/campaigns/{{ campaign.id }}/outreach/activate" method="post">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label><input type="checkbox" name="confirm" required value="I_AUTHORIZE_LIVE_OUTREACH">
+      I authorize compliant first-contact email sending under this campaign policy and confirm that the recorded contact basis and sender details are accurate.</label>
+    <button type="submit" class="primary">Activate live outreach</button>
+  </form>
+  {% else %}
+  <form action="/campaigns/{{ campaign.id }}/outreach/pause" method="post">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit">Pause live outreach</button>
+  </form>
+  {% if campaign.status == 'ready' %}
+  <form action="/campaigns/{{ campaign.id }}/outreach/run" method="post">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit" class="primary">Run eligible first-contact worker</button>
+  </form>
+  {% endif %}
+  {% endif %}
+  <h3>Read-only campaign simulation</h3>
+  <div class="table-scroll"><table><thead><tr><th>Prospect</th><th>Fit</th><th>Email</th><th>Decision</th></tr></thead><tbody>
+  {% for p in outreach_preview %}
+  <tr><td>{{ p.company }}</td><td>{{ p.score }}</td><td>{{ p.email or 'Not enriched' }}</td><td>{{ p.decision.replace('_',' ') }}</td></tr>
+  {% endfor %}
+  </tbody></table></div>
+  <p class="hint">No automatic follow-up emails are sent. Inbound replies are classified and surfaced for review; opt-outs and bounces update the suppression list.</p>
+</section>
+<section class="panel narrow"><h2>Execution history</h2>{% for e in events %}<div class="history"><span class="dot"></span><div><strong>{{ e.action.replace('_',' ')|title }}</strong>{% if e.action == 'outreach_worker_completed' %}<div class="small">{{ e.details.sent }} sent · {{ e.details.held }} held{% if e.details.reasons %} · Reasons: {{ e.details.reasons|join(', ') }}{% endif %}</div>{% endif %}<div class="small">{{ e.created_at.strftime('%d %b %Y · %H:%M UTC') }}</div></div></div>{% endfor %}</section>
 {% endblock %}

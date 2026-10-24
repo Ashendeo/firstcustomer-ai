@@ -10,7 +10,7 @@ class IntegrationError(RuntimeError):
     pass
 
 
-def send_email(to: str, subject: str, body: str, lead_id: str) -> str:
+def send_email(to: str, subject: str, body: str, lead_id: str, *, reply_to: str = "") -> str:
     if settings.DEMO_MODE:
         raise IntegrationError("Sending disabled in DEMO_MODE")
     if not settings.RESEND_API_KEY or not settings.FROM_EMAIL:
@@ -20,11 +20,15 @@ def send_email(to: str, subject: str, body: str, lead_id: str) -> str:
             "https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}",
                      "Idempotency-Key": "lead-outreach-v1-" + lead_id},
-            json={"from": settings.FROM_EMAIL, "to": [to], "subject": subject, "text": body},
+            json={**{"from": settings.FROM_EMAIL, "to": [to], "subject": subject, "text": body},
+                  **({"reply_to": reply_to} if reply_to else {})},
             timeout=20,
         )
         response.raise_for_status()
-        return str(response.json().get("id") or "")
+        provider_id = str(response.json().get("id") or "")
+        if not provider_id:
+            raise IntegrationError("Email service accepted request without a provider ID; send outcome requires reconciliation")
+        return provider_id
     except httpx.HTTPStatusError as exc:
         raise IntegrationError(f"Email service returned HTTP {exc.response.status_code}") from exc
     except httpx.RequestError as exc:

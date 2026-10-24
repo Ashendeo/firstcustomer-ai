@@ -1,5 +1,6 @@
 """Thin adapter. Neither scraping nor Crustdata credentials are required in demo mode."""
 import httpx
+from urllib.parse import urlsplit
 from . import settings
 
 
@@ -69,3 +70,26 @@ class Crustdata:
             "limit": min(limit, 2),
         })
         return response.get("profiles", [])
+
+    def business_email_enrich(self, profile_url: str) -> list[dict]:
+        """Use ONLY the documented contact subfield to minimize Crustdata credits.
+
+        Requires contact-enrich permission; a 403 is surfaced, not silently
+        retried or replaced with guessed addresses.
+        """
+        parsed = urlsplit(profile_url)
+        if (parsed.scheme != "https" or parsed.hostname not in
+                ("linkedin.com", "www.linkedin.com") or not parsed.path.startswith("/in/")):
+            return []
+        response = self.post("/person/contact/enrich", {
+            "professional_network_profile_urls": [profile_url],
+            "fields": ["contact.business_emails"],
+        })
+        if not isinstance(response, list):
+            raise CrustdataError("Crustdata contact enrichment response was not a list")
+        matches = (response[0] or {}).get("matches") or [] if response else []
+        emails = []
+        for match in matches:
+            person_data = match.get("person_data") or {}
+            emails += ((person_data.get("contact") or {}).get("business_emails") or [])
+        return [e for e in emails if isinstance(e, dict)]
