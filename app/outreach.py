@@ -83,7 +83,7 @@ def policy_decision(db, campaign: Campaign, lead: Lead,
     if rank is None:
         return "missing_search_rank"
     if rank > OUTREACH_TOP_N:
-        return "outside_search_top_five"
+        return "outside_search_top_twenty"
     if lead.status != "draft":
         return "already_processed"
     if not lead.draft_subject or not lead.draft_body:
