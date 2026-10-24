@@ -238,7 +238,7 @@ def run_outreach(campaign_id: str) -> dict:
                     # Never retry an ambiguous chargeable request automatically.
                     result["held"] += 1
                     result["reasons"].append(type(exc).__name__)
-                    if isinstance(exc, CrustdataError):
+                    if isinstance(exc, (CrustdataError, CheckpointNeedsReview)):
                         # Missing permission/credits likely affects every lead;
                         # don't issue additional provider calls in this run.
                         break
