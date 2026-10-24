@@ -15,6 +15,20 @@
   <div class="stat"><div class="statvalue">{{ counts.sent + counts.booked }}</div><span>Outreach sent / booked</span></div>
   <div class="stat"><div class="statvalue">{{ counts.booked }}</div><span>Meetings booked</span></div>
 </div>
+<section class="panel">
+<div class="between"><h2>Company ranking and comparison</h2><span class="muted">Descending evidence score, not purchase probability</span></div>
+<p class="hint">Scorecard v1 measures text overlap with the ideal customer, headcount fit, buyer-role fit, and available evidence. The number is not a statistical probability of buying. Historical model scores retain their original value and are labelled separately.</p>
+{% if ranked %}
+<div class="table-scroll"><table><thead><tr><th>Rank</th><th>Company</th><th>Score</th><th>Strongest factor</th><th>Key gap</th><th>Basis</th></tr></thead><tbody>
+{% for row in ranked %}
+<tr><td><strong>#{{ row.rank }}</strong></td><td><a class="subtle-link" href="/leads/{{ row.lead.id }}">{{ row.lead.company_name }}</a><div class="small">{{ row.lead.domain }}</div></td>
+<td><span class="score">{{ row.lead.fit_score }}</span>/100</td>
+<td>{{ row.top_strength }}</td><td>{{ row.main_gap }}</td>
+<td>{% if row.score_source == 'legacy_model' %}<span class="pill warn">Older model score</span>{% else %}<span class="pill success">Explained rubric</span>{% endif %}</td></tr>
+{% endfor %}
+</tbody></table></div>
+{% else %}<p class="empty">No companies ranked yet.</p>{% endif %}
+</section>
 <section class="panel"><div class="between"><h2>Prospect pipeline</h2><span class="muted">Sorted by fit score</span></div>
 {% if leads %}
 <div class="table-scroll"><table><thead><tr><th>Company</th><th>Decision-maker</th><th>Fit</th><th>Status</th><th></th></tr></thead><tbody>
@@ -100,6 +114,44 @@
   {% endfor %}
   </tbody></table></div>
   <p class="hint">No automatic follow-up emails are sent. Inbound replies are classified and surfaced for review; opt-outs and bounces update the suppression list.</p>
+</section>
+<section class="panel">
+  <h2>Crustdata execution trace</h2>
+  <p class="hint">Actual request JSON, requested attributes, sampled returned attribute names and checkpoint reuse. These are persisted audit records; opening this page does not call Crustdata. Authorization headers, API keys and personal record values are excluded.</p>
+  {% if trace_events %}
+  {% for event in trace_events %}
+    <details>
+      <summary>
+        {{ event.details.endpoint }} · {{ event.details.result_count }} records ·
+        {{ "Cached—0 new calls" if event.details.from_checkpoint else "Provider request / simulation" }}
+        · {{ event.created_at.strftime('%d %b %H:%M UTC') }}
+      </summary>
+      {% if event.details.company %}<p>Company: {{ event.details.company }} ({{ event.details.domain }})</p>{% endif %}
+      <h3>Exact request sent</h3>
+      <pre>{{ event.details.request | tojson(indent=2) }}</pre>
+      <h3>Returned attribute paths (sampled)</h3>
+      <p class="small">{{ event.details.returned_attributes|join(', ') or 'No attributes returned' }}</p>
+      <p class="hint">{{ event.details.note }} · Provider calls this run: {{ event.details.provider_calls_this_run }}</p>
+    </details>
+  {% endfor %}
+  {% else %}
+  <p class="empty">No detailed query events recorded for this campaign yet. Existing older campaigns may only have basic checkpoint history.</p>
+  {% endif %}
+</section>
+<section class="panel">
+  <h2>Gmail demo delivery (private inbox sink)</h2>
+  <p class="hint">Sends up to 10 sample campaign drafts to the same authenticated Gmail account as both sender and recipient. Real prospect addresses are never used. Each SMTP attempt has a write-ahead checkpoint; uncertain sends are not automatically repeated.</p>
+  {% if gmail_demo_recipient %}
+    <p>Sender and recipient: <strong>{{ gmail_demo_recipient }}</strong></p>
+    {% if campaign.status == 'ready' %}
+      <form action="/campaigns/{{ campaign.id }}/gmail-demo/send" method="post">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button class="secondary" type="submit">Send demo drafts to my Gmail inbox</button>
+      </form>
+    {% else %}<p class="hint">Finish discovery first.</p>{% endif %}
+  {% else %}
+    <p class="hint">Configure GMAIL_DEMO_SENDER, GMAIL_DEMO_TO and GMAIL_DEMO_APP_PASSWORD in your local .env to enable private demo delivery.</p>
+  {% endif %}
 </section>
 <section class="panel narrow"><h2>Execution history</h2>{% for e in events %}<div class="history"><span class="dot"></span><div><strong>{{ e.action.replace('_',' ')|title }}</strong>{% if e.action == 'outreach_worker_completed' %}<div class="small">{{ e.details.sent }} sent · {{ e.details.held }} held{% if e.details.reasons %} · Reasons: {{ e.details.reasons|join(', ') }}{% endif %}</div>{% endif %}<div class="small">{{ e.created_at.strftime('%d %b %Y · %H:%M UTC') }}</div></div></div>{% endfor %}</section>
 {% endblock %}
