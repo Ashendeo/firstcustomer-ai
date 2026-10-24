@@ -23,7 +23,10 @@ MAX_CONTACT_ENRICHMENTS = max(0, min(int(os.getenv("MAX_CONTACT_ENRICHMENTS", "4
 MAX_PEOPLE_FALLBACK_SEARCHES = max(0, min(int(os.getenv("MAX_PEOPLE_FALLBACK_SEARCHES", "200")), 300))
 PEOPLE_FALLBACK_RESULTS = max(1, min(int(os.getenv("PEOPLE_FALLBACK_RESULTS", "40")), 100))
 PRIMARY_PEOPLE_RESULTS = max(1, min(int(os.getenv("PRIMARY_PEOPLE_RESULTS", "15")), 20))
-MAX_COMPANIES = max(1, min(int(os.getenv("MAX_COMPANIES", "100")), 100))
+# Discovery must request 100 companies for new campaigns. Older local .env
+# files may still contain MAX_COMPANIES=5; don't silently cap Stage 1.
+# Tests can monkeypatch this setting to exercise smaller fixtures.
+MAX_COMPANIES = 100
 MAX_PEOPLE_SEARCHES = max(0, min(int(os.getenv("MAX_PEOPLE_SEARCHES", "100")), 100))
 API_CONCURRENCY = max(1, min(int(os.getenv("API_CONCURRENCY", "4")), 8))
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
