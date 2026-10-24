@@ -164,3 +164,23 @@ def test_rescore_existing_zero_without_provider_requests(client, token):
             AuditEvent.campaign_id == campaign_id,
             AuditEvent.action == "saved_evidence_rescored"))
         assert event.details["provider_calls"] == 0
+
+
+def test_create_and_research_starts_background_in_demo(client, token):
+    resp = client.post("/campaigns", data={
+        "csrf": token, "name": "Create and research",
+        "seller_name": "Example Seller",
+        "seller_domain": "seller.example",
+        "product": "Cloud security analytics services",
+        "ideal_customer": "Businesses looking to secure cloud workloads",
+        "start_discovery": "true",
+    }, follow_redirects=False)
+    assert resp.status_code == 303
+    cid = resp.headers["location"].rsplit("/", 1)[-1]
+    with SessionLocal() as db:
+        campaign = db.get(Campaign, cid)
+        assert campaign.status == "ready", campaign.error
+        assert campaign.seller_domain == "seller.example"
+        assert db.scalar(select(StepCheckpoint).where(
+            StepCheckpoint.campaign_id == cid,
+            StepCheckpoint.step_key == "seller_research")).status == "complete"
