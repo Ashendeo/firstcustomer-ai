@@ -389,25 +389,18 @@ def run_campaign(campaign_id: str):
                     })
                     continue
 
-                people = []
-                people_search_attempted = i < settings.MAX_PEOPLE_SEARCHES and (settings.DEMO_MODE or bool(domain))
+                people_key = "people:" + discovery_key[:32]
+                people_search_attempted = people_key in primary_people_results
+                people = primary_people_results.get(people_key, [])
                 if people_search_attempted:
-                    people_key = f"people:{discovery_key[:32]}"
-                    old = get_checkpoint(db, c.id, people_key)
-                    people_was_cached = bool(old and old.status == "complete")
-                    people_request = RequestBuilder.people_search_request(
-                        domain, plan["titles"], limit=4)
-                    people = checkpointed(
-                        db, c.id, people_key,
-                        {"revision": "people-search-v1", "demo": settings.DEMO_MODE,
-                         "domain": domain, "titles": plan["titles"], "limit": 4},
-                        lambda: ([DEMO_PEOPLE[i % len(DEMO_PEOPLE)]]
-                                 if settings.DEMO_MODE else
-                                 api.people_search(domain, plan["titles"], limit=4)),
-                    )
+                    request = RequestBuilder.people_search_request(
+                        domain, plan["titles"], limit=settings.PRIMARY_PEOPLE_RESULTS)
                     audit(db, c.id, "crustdata_people_query", details={
-                        **search_trace("/person/search", people_request, people,
-                                       people_was_cached, demo=settings.DEMO_MODE),
+                        **search_trace(
+                            "/person/search", request, people,
+                            people_was_cached[people_key],
+                            demo=settings.DEMO_MODE,
+                        ),
                         "company": company_name, "domain": domain,
                     })
                     db.commit()
