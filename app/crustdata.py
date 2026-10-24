@@ -1,5 +1,6 @@
 """Thin adapter. Neither scraping nor Crustdata credentials are required in demo mode."""
 import httpx
+from urllib.parse import urlsplit
 from . import settings
 
 
@@ -76,7 +77,9 @@ class Crustdata:
         Requires contact-enrich permission; a 403 is surfaced, not silently
         retried or replaced with guessed addresses.
         """
-        if not profile_url.startswith("https://www.linkedin.com/in/"):
+        parsed = urlsplit(profile_url)
+        if (parsed.scheme != "https" or parsed.hostname not in
+                ("linkedin.com", "www.linkedin.com") or not parsed.path.startswith("/in/")):
             return []
         response = self.post("/person/contact/enrich", {
             "professional_network_profile_urls": [profile_url],
