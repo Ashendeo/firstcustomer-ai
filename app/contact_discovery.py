@@ -152,6 +152,10 @@ def discover_contact(db, campaign_id: str, domain: str, discovery_key: str,
     ]:
         if chosen or settings.DEMO_MODE:
             break
+        if verified_only and not hasattr(api, "people_search_verified"):
+            continue
+        if not hasattr(api, "people_search"):
+            continue
         key = prefix + discovery_key[:32]
         old = get_checkpoint(db, campaign_id, key)
         cached = bool(old and old.status == "complete")
