@@ -181,6 +181,11 @@ def campaign_detail(campaign_id: str, request: Request, db: Session = Depends(ge
     counts = {s: sum(l.status == s for l in leads) for s in ("draft", "approved", "sending", "sent", "booked", "canceled")}
     events = db.scalars(select(AuditEvent).where(AuditEvent.campaign_id == campaign.id).order_by(AuditEvent.created_at.desc()).limit(100)).all()
     trace_events = [event for event in events if event.action in ("crustdata_company_query", "crustdata_people_query")]
+    ranking_events = {
+        action: next((e.details for e in events if e.action == action), {})
+        for action in ("candidate_search_prioritization", "candidate_enriched_ranking",
+                       "candidate_final_ranking")
+    }
     checkpoints = db.scalars(select(StepCheckpoint).where(StepCheckpoint.campaign_id == campaign.id).order_by(StepCheckpoint.created_at)).all()
     policy = get_policy(db, campaign.id)
     preview = preview_outreach(campaign.id)
@@ -190,6 +195,7 @@ def campaign_detail(campaign_id: str, request: Request, db: Session = Depends(ge
                 leads=leads, counts=counts,
                 events=events, checkpoints=checkpoints, outreach_policy=policy,
                 outreach_preview=preview, ranked=ranked, trace_events=trace_events,
+                ranking_events=ranking_events,
                 gmail_demo_recipient=gmail_demo_address())
 
 
