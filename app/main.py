@@ -186,6 +186,8 @@ def campaign_detail(campaign_id: str, request: Request, db: Session = Depends(ge
         for action in ("candidate_search_prioritization", "candidate_enriched_ranking",
                        "candidate_final_ranking")
     }
+    ranking_summary = next((e.details for e in events
+                            if e.action == "candidate_funnel_summary"), {})
     checkpoints = db.scalars(select(StepCheckpoint).where(StepCheckpoint.campaign_id == campaign.id).order_by(StepCheckpoint.created_at)).all()
     policy = get_policy(db, campaign.id)
     preview = preview_outreach(campaign.id)
@@ -195,7 +197,7 @@ def campaign_detail(campaign_id: str, request: Request, db: Session = Depends(ge
                 leads=leads, counts=counts,
                 events=events, checkpoints=checkpoints, outreach_policy=policy,
                 outreach_preview=preview, ranked=ranked, trace_events=trace_events,
-                ranking_events=ranking_events,
+                ranking_events=ranking_events, ranking_summary=ranking_summary,
                 gmail_demo_recipient=gmail_demo_address())
 
 
