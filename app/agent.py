@@ -175,26 +175,67 @@ def run_campaign(campaign_id: str):
             c.search_query = plan["query"]
             db.commit()
             api = None if settings.DEMO_MODE else Crustdata()
-            company_request = RequestBuilder.company_search_request(
-                plan["query"], c.country, settings.MAX_COMPANIES,
-                c.min_revenue_usd, c.max_revenue_usd)
-            company_was_cached = bool(
-                (get_checkpoint(db, c.id, "company_search") or None)
-                and get_checkpoint(db, c.id, "company_search").status == "complete")
-            companies = checkpointed(
-                db, c.id, "company_search",
-                {"revision": "company-search-v1", "demo": settings.DEMO_MODE,
-                 "query": plan["query"], "country": c.country,
-                 "min_revenue_usd": c.min_revenue_usd, "max_revenue_usd": c.max_revenue_usd,
-                 "limit": settings.MAX_COMPANIES},
-                lambda: (DEMO_COMPANIES[:settings.MAX_COMPANIES]
-                         if settings.DEMO_MODE else api.company_search(
-                             plan["query"], c.country, settings.MAX_COMPANIES,
-                             c.min_revenue_usd, c.max_revenue_usd)),
-            )
-            audit(db, c.id, "crustdata_company_query", details=search_trace(
-                "/company/search", company_request, companies,
-                company_was_cached, demo=settings.DEMO_MODE))
+            # Cursor pagination is checkpointed per provider call. A rerun resumes
+            # from completed pages without repaying for them. Never silently
+            # retry an uncertain paid request.
+            companies = []
+            company_pages = []
+            identities = set()
+            cursor = None
+            visited_cursors = set()
+            for page_number in range(1, 21):
+                if len(companies) >= settings.MAX_COMPANIES:
+                    break
+                requested = min(100, settings.MAX_COMPANIES - len(companies))
+                company_request = RequestBuilder.company_search_request(
+                    plan["query"], c.country, requested,
+                    c.min_revenue_usd, c.max_revenue_usd, cursor=cursor)
+                key = f"company_search_page_{page_number}"
+                step = get_checkpoint(db, c.id, key)
+                from_cache = bool(step and step.status == "complete")
+                page = checkpointed(
+                    db, c.id, key,
+                    {"revision": "company-search-pagination-v1", "demo": settings.DEMO_MODE,
+                     "request": company_request},
+                    (lambda requested=requested: {
+                        "companies": DEMO_COMPANIES[:requested], "next_cursor": None
+                    }) if settings.DEMO_MODE else
+                    (lambda cursor=cursor, requested=requested: api.company_search_page(
+                        plan["query"], c.country, requested,
+                        c.min_revenue_usd, c.max_revenue_usd, cursor=cursor)),
+                )
+                rows = page.get("companies") or []
+                audit(db, c.id, "crustdata_company_query", details={
+                    **search_trace("/company/search", company_request, rows,
+                                   from_cache, demo=settings.DEMO_MODE),
+                    "page": page_number,
+                    "has_next_cursor": bool(page.get("next_cursor")),
+                })
+                db.commit()
+                company_pages.append(len(rows))
+                for row in rows:
+                    basic = row.get("basic_info") or {}
+                    identity = (str(row.get("crustdata_company_id") or "") or
+                                str(basic.get("primary_domain") or "").lower() or
+                                str(basic.get("name") or "").casefold())
+                    if identity and identity not in identities:
+                        identities.add(identity)
+                        companies.append(row)
+                        if len(companies) >= settings.MAX_COMPANIES:
+                            break
+                next_cursor = page.get("next_cursor")
+                if not next_cursor or next_cursor == cursor or next_cursor in visited_cursors:
+                    break
+                if not rows:
+                    break
+                visited_cursors.add(next_cursor)
+                cursor = next_cursor
+            audit(db, c.id, "company_search_pagination_summary", details={
+                "requested": settings.MAX_COMPANIES,
+                "unique_companies": len(companies),
+                "page_result_counts": company_pages,
+                "pages_fetched": len(company_pages),
+            })
             db.commit()
             seen = set()
             contact_budget = {"used": 0}
