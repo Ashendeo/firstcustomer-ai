@@ -88,3 +88,75 @@ def checkpointed(db, campaign_id: str, step_key: str, inputs: dict, execute):
     step.status = "complete"
     db.commit()  # atomic persistence of result + completion state
     return value
+
+
+def checkpointed_parallel(db, campaign_id: str, jobs: list[tuple],
+                          max_workers: int = 4) -> dict:
+    """Dispatch independent provider calls concurrently, with durable claims.
+
+    All in-flight rows are COMMITTED before starting any worker thread.
+    Workers only use the remote API and never share a SQLAlchemy session.
+    Successful and uncertain results are committed one by one. An exception
+    from one worker does not discard the safe results from other workers.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    cached, outstanding, seen = {}, [], set()
+    for step_key, inputs, operation in jobs:
+        if step_key in seen:
+            raise ValueError("Parallel calls must use unique checkpoint keys")
+        seen.add(step_key)
+        request_hash = fingerprint(inputs)
+        step = get_checkpoint(db, campaign_id, step_key)
+        if step is not None:
+            if step.input_hash != request_hash:
+                raise CheckpointNeedsReview(
+                    f"{step_key}: parallel request differs from the persisted checkpoint")
+            if step.status == "complete":
+                cached[step_key] = step.result["value"]
+                continue
+            if step.status != "retry_authorized":
+                raise CheckpointNeedsReview(
+                    f"{step_key}: {step.status}; an earlier paid call may have succeeded")
+        else:
+            step = StepCheckpoint(campaign_id=campaign_id, step_key=step_key,
+                                  input_hash=request_hash)
+            db.add(step)
+        step.status = "in_flight"
+        step.attempts = (step.attempts or 0) + 1
+        step.last_error = ""
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise CheckpointNeedsReview(
+                f"{step_key}: another worker already claimed this paid call"
+            ) from exc
+        outstanding.append((step_key, operation))
+
+    failures = []
+    if not outstanding:
+        return cached
+    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, 8))) as pool:
+        submitted = {pool.submit(operation): key for key, operation in outstanding}
+        for future in as_completed(submitted):
+            key = submitted[future]
+            try:
+                value = future.result()
+                json.dumps(value)
+                checkpoint = get_checkpoint(db, campaign_id, key)
+                checkpoint.result = {"value": value}
+                checkpoint.status = "complete"
+                db.commit()
+                cached[key] = value
+            except Exception as exc:
+                db.rollback()
+                checkpoint = get_checkpoint(db, campaign_id, key)
+                if checkpoint:
+                    checkpoint.status = "uncertain"
+                    checkpoint.last_error = type(exc).__name__
+                    db.commit()
+                failures.append(exc)
+    if failures:
+        raise failures[0]
+    return cached
