@@ -188,6 +188,25 @@ def campaign_detail(campaign_id: str, request: Request, db: Session = Depends(ge
     }
     ranking_summary = next((e.details for e in events
                             if e.action == "candidate_funnel_summary"), {})
+    if not ranking_summary and ranking_events["candidate_search_prioritization"]:
+        # Older campaigns cannot be retroactively charged or rewritten just
+        # because someone views the dashboard. Reconstruct counts from the
+        # existing audit events and identify legacy disappearing candidates.
+        old_stage1 = ranking_events["candidate_search_prioritization"].get("candidates") or []
+        old_stage2 = ranking_events["candidate_enriched_ranking"].get("candidates") or []
+        old_final = ranking_events["candidate_final_ranking"].get("candidates") or []
+        ranking_summary = {
+            "company_search_results": len(old_stage1),
+            "stage1_ranked": len(old_stage1),
+            "stage2_ranked": len(old_stage2),
+            "new_leads": sum(item.get("status") == "lead_created" for item in old_final),
+            "search_empty": not old_stage1,
+            "people_search_limit": settings.MAX_PEOPLE_SEARCHES,
+            "contact_enrichment_limit": settings.MAX_CONTACT_ENRICHMENTS,
+            "advanced_enrichments_attempted": 0,
+            "legacy_snapshot": True,
+            "legacy_disappeared": max(0, len(old_stage1) - len(old_stage2)),
+        }
     checkpoints = db.scalars(select(StepCheckpoint).where(StepCheckpoint.campaign_id == campaign.id).order_by(StepCheckpoint.created_at)).all()
     policy = get_policy(db, campaign.id)
     preview = preview_outreach(campaign.id)
