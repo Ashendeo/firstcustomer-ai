@@ -30,7 +30,7 @@ def test_scoring_breakdown_sums_exactly_and_cites_observed_fields():
     assert poor["total"] is None
     assert poor["scorable"] is False
     assert poor["gaps"]
-    assert poor["evidence_confidence"] == "limited"
+    assert poor["evidence_confidence"] == "insufficient"
 
 
 def test_historical_model_score_not_relabelled_as_rubric():
