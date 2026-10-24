@@ -33,6 +33,7 @@ from .resend_events import handle_resend_event, verify_signature
 from .ranking import ranked_companies
 from .scoring import scorecard_for_display
 from .gmail_demo import gmail_demo_address, send_campaign_demo
+from .seller_research import normalize_company_domain
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,8 @@ def index(request: Request, db: Session = Depends(get_db), _: str = Depends(auth
 def create_campaign(
     name: str = Form(min_length=3, max_length=140),
     product: str = Form(min_length=10, max_length=2000),
+    seller_name: str = Form(default="", max_length=200),
+    seller_domain: str = Form(default="", max_length=180),
     ideal_customer: str = Form(min_length=10, max_length=2000),
     country: str = Form(default="India", max_length=60),
     buyer_titles: str = Form(default="Head of HR,HR Director", max_length=250),
@@ -126,7 +129,13 @@ def create_campaign(
             raise HTTPException(422, "Booking link must be a valid HTTPS Calendly URL")
     if min_headcount and max_headcount and min_headcount > max_headcount:
         raise HTTPException(422, "Minimum headcount cannot exceed maximum")
-    c = Campaign(name=name.strip(), product=product.strip(), ideal_customer=ideal_customer.strip(),
+    clean_domain = normalize_company_domain(seller_domain)
+    if seller_domain.strip() and not clean_domain:
+        raise HTTPException(422, "Enter a valid public company domain, e.g. acme.com")
+    if not settings.DEMO_MODE and not clean_domain:
+        raise HTTPException(422, "Your company website/domain is required for live campaign research")
+    c = Campaign(name=name.strip(), seller_name=seller_name.strip(), seller_domain=clean_domain,
+                 product=product.strip(), ideal_customer=ideal_customer.strip(),
                  country=country.strip(), buyer_titles=buyer_titles.strip(),
                  min_headcount=min_headcount, max_headcount=max_headcount, booking_url=booking_url.strip())
     db.add(c)
@@ -147,7 +156,10 @@ def campaign_detail(campaign_id: str, request: Request, db: Session = Depends(ge
     checkpoints = db.scalars(select(StepCheckpoint).where(StepCheckpoint.campaign_id == campaign.id).order_by(StepCheckpoint.created_at)).all()
     policy = get_policy(db, campaign.id)
     preview = preview_outreach(campaign.id)
-    return page(request, "campaign.html", campaign=campaign, leads=leads, counts=counts,
+    research_checkpoint = next((step for step in checkpoints if step.step_key == "seller_research" and step.status == "complete"), None)
+    seller_research = (research_checkpoint.result or {}).get("value", {}) if research_checkpoint else {}
+    return page(request, "campaign.html", campaign=campaign, seller_research=seller_research,
+                leads=leads, counts=counts,
                 events=events, checkpoints=checkpoints, outreach_policy=policy,
                 outreach_preview=preview, ranked=ranked, trace_events=trace_events,
                 gmail_demo_recipient=gmail_demo_address())
