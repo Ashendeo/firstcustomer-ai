@@ -78,7 +78,7 @@ class Crustdata:
                        "experience.employment_details.current.title",
                        "experience.employment_details.current.company_website",
                        "social_handles.professional_network_identifier.profile_url",
-                       "contact.has_business_email"],
+                       "crustdata_person_id"],
             "limit": min(limit, 20),
         }
 
@@ -114,6 +114,48 @@ class Crustdata:
             return []
         response = self.post("/person/search", request)
         return response.get("profiles", [])
+
+    def business_email_enrich_batch(self, profile_urls: list[str]) -> dict[str, list[dict]]:
+        """Up to 25 official LinkedIn profile identifiers per paid request.
+
+        The response is keyed by 'matched_on', not by input position.
+        Missing profiles map to an empty list, never to a guessed address.
+        """
+        urls = []
+        for url in profile_urls:
+            parsed = urlsplit(url)
+            if (parsed.scheme == "https" and parsed.hostname in
+                    ("linkedin.com", "www.linkedin.com") and
+                    parsed.path.startswith("/in/")):
+                normalized = "https://www.linkedin.com" + parsed.path.rstrip("/")
+                if normalized not in urls:
+                    urls.append(normalized)
+        if not urls:
+            return {}
+        if len(urls) > 25:
+            raise ValueError("Crustdata contact enrichment supports at most 25 identifiers")
+        response = self.post("/person/contact/enrich", {
+            "professional_network_profile_urls": urls,
+            "fields": ["contact.business_emails"],
+        })
+        if not isinstance(response, list):
+            raise CrustdataError("Unexpected batch business-email enrichment response")
+        found = {url: [] for url in urls}
+        for item in response:
+            if not isinstance(item, dict):
+                continue
+            matched = str(item.get("matched_on") or "")
+            parsed = urlsplit(matched)
+            identity = ("https://www.linkedin.com" + parsed.path.rstrip("/")
+                        if parsed.path.startswith("/in/") else "")
+            if identity not in found:
+                continue
+            for match in item.get("matches") or []:
+                emails = ((match.get("person_data") or {}).get("contact") or {}).get(
+                    "business_emails") or []
+                found[identity].extend(record for record in emails
+                                       if isinstance(record, dict))
+        return found
 
     def business_email_enrich(self, profile_url: str) -> list[dict]:
         """Use ONLY the documented contact subfield to minimize Crustdata credits.
