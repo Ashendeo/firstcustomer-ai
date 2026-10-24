@@ -1,5 +1,7 @@
 name: Python checks
 on:
+  push:
+    branches: [main, feature/market-skills-and-contact-gating]
   pull_request:
     branches: [main]
   workflow_dispatch:
