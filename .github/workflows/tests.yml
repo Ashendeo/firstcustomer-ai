@@ -20,5 +20,7 @@ jobs:
           python -m pip install -r requirements.txt pytest
       - name: Syntax check
         run: python -m compileall -q app tests alembic
+      - name: Database migration smoke test
+        run: DATABASE_URL=sqlite:///./ci-checkpoints.db alembic upgrade head
       - name: Run test suite
         run: python -m pytest -q
