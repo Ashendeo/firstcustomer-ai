@@ -221,6 +221,14 @@ def run_campaign(campaign_id: str):
             c.error = ""
             audit(db, c.id, "campaign_complete", details={"demo": settings.DEMO_MODE})
             db.commit()
+            # Simulation is always default; live outreach only runs after the
+            # operator has explicitly activated this campaign's policy.
+            try:
+                from .outreach import run_outreach
+                run_outreach(campaign_id)
+            except Exception:
+                # Outbound errors never corrupt completed discovery checkpoints.
+                logger.exception("Outreach stage failed for campaign %s", campaign_id)
         except Exception as exc:
             logger.exception("Campaign %s failed", campaign_id)
             db.rollback()
