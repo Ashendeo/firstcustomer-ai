@@ -35,7 +35,7 @@
 </div>
 <section class="panel">
 <div class="between"><h2>Company ranking and comparison</h2><span class="muted">Descending evidence score, not purchase probability</span></div>
-<p class="hint">Scorecard v1 measures text overlap with the ideal customer, headcount fit, buyer-role fit, and available evidence. The number is not a statistical probability of buying. Historical model scores retain their original value and are labelled separately.</p>
+<p class="hint">New campaigns use a market-specific scorecard with observed industry fit, estimated USD revenue, problem relevance, timing proxies, buyer-role fit, and evidence coverage. The number is not a statistical probability of buying. Historical model scores retain their original value and are labelled separately.</p>
 {% if ranked %}
 <div class="table-scroll"><table><thead><tr><th>Rank</th><th>Company</th><th>Score</th><th>Strongest factor</th><th>Key gap</th><th>Basis</th></tr></thead><tbody>
 {% for row in ranked %}
@@ -93,8 +93,8 @@
   <form action="/campaigns/{{ campaign.id }}/outreach/policy" method="post">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label><input type="checkbox" name="auto_send" value="true" {{ 'checked' if outreach_policy.auto_send else '' }}> Enable eligible auto-send when live mode is activated</label>
-    <label>Minimum qualification score (85–100)
-      <input type="number" name="min_score" min="85" max="100" value="{{ outreach_policy.min_score }}" required></label>
+    <label>Minimum qualification score (75–100)
+      <input type="number" name="min_score" min="75" max="100" value="{{ outreach_policy.min_score }}" required></label>
     <label>Maximum first-contact emails per UTC day (1–10)
       <input type="number" name="daily_limit" min="1" max="10" value="{{ outreach_policy.daily_limit }}" required></label>
     <label>Documented contact basis
