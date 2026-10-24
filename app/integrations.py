@@ -25,7 +25,10 @@ def send_email(to: str, subject: str, body: str, lead_id: str, *, reply_to: str 
             timeout=20,
         )
         response.raise_for_status()
-        return str(response.json().get("id") or "")
+        provider_id = str(response.json().get("id") or "")
+        if not provider_id:
+            raise IntegrationError("Email service accepted request without a provider ID; send outcome requires reconciliation")
+        return provider_id
     except httpx.HTTPStatusError as exc:
         raise IntegrationError(f"Email service returned HTTP {exc.response.status_code}") from exc
     except httpx.RequestError as exc:
