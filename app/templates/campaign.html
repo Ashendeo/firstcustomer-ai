@@ -32,6 +32,7 @@
 <form method="post" action="/campaigns/{{ campaign.id }}/checkpoints/retry">
 <input type="hidden" name="csrf" value="{{ csrf }}">
 <input type="hidden" name="step_key" value="{{ step.step_key }}">
+<label><input type="checkbox" name="confirm" value="POSSIBLE_DUPLICATE_CHARGE" required> I accept that this request may be charged again.</label>
 <button type="submit">Authorize paid retry</button></form>
 {% else %}—{% endif %}
 </td></tr>
