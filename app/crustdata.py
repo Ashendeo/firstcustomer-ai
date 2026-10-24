@@ -43,7 +43,7 @@ class Crustdata:
             "search": {"query": query[:600], "mode": "hybrid"},
             "fields": ["basic_info.name", "basic_info.primary_domain",
                        "basic_info.description"],
-            "limit": min(limit, 10),
+            "limit": min(limit, 100),
         }
         if country:
             data["filters"] = {"field": "locations.country", "type": "=",
