@@ -309,7 +309,7 @@ def run_campaign(campaign_id: str):
                 if not drop_reason:
                     seen_domains.add(identity)
                 if not drop_reason and prioritized_item["provider_rank"] > OUTREACH_TOP_N:
-                    drop_reason = "outside_search_top_five"
+                    drop_reason = "outside_search_top_twenty"
                 discovery_key = fingerprint({"identity": identity})
                 enrich_key = "prospect_enrich_advanced:" + fingerprint(
                     {"identity": domain})[:32]
@@ -687,7 +687,7 @@ def run_campaign(campaign_id: str):
                     for status in sorted({item["status"] for item in candidate_outcomes})
                 },
                 "search_empty": len(companies) == 0,
-                "note": "Only search ranks 1-5 are selected for outreach, regardless of fit score. Lead creation requires an exact-domain deliverable work email.",
+                "note": "Only search ranks 1-20 are selected for outreach, regardless of fit score. Lead creation requires an exact-domain deliverable work email.",
             })
             db.commit()
 
