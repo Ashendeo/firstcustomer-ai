@@ -30,6 +30,9 @@ from .outreach import (get_policy, preview_outreach, run_outreach,
                        ready_for_live, jurisdiction_decision,
                        normalized_email, valid_unsubscribe_signature)
 from .resend_events import handle_resend_event, verify_signature
+from .ranking import ranked_companies
+from .scoring import scorecard_for_display
+from .gmail_demo import gmail_demo_address, send_campaign_demo
 
 logger = logging.getLogger(__name__)
 
@@ -137,13 +140,17 @@ def create_campaign(
 def campaign_detail(campaign_id: str, request: Request, db: Session = Depends(get_db), _: str = Depends(authorize)):
     campaign = get_campaign(db, campaign_id)
     leads = db.scalars(select(Lead).where(Lead.campaign_id == campaign.id).order_by(Lead.fit_score.desc())).all()
+    ranked = ranked_companies(campaign, leads)
     counts = {s: sum(l.status == s for l in leads) for s in ("draft", "approved", "sending", "sent", "booked", "canceled")}
-    events = db.scalars(select(AuditEvent).where(AuditEvent.campaign_id == campaign.id).order_by(AuditEvent.created_at.desc()).limit(20)).all()
+    events = db.scalars(select(AuditEvent).where(AuditEvent.campaign_id == campaign.id).order_by(AuditEvent.created_at.desc()).limit(100)).all()
+    trace_events = [event for event in events if event.action in ("crustdata_company_query", "crustdata_people_query")]
     checkpoints = db.scalars(select(StepCheckpoint).where(StepCheckpoint.campaign_id == campaign.id).order_by(StepCheckpoint.created_at)).all()
     policy = get_policy(db, campaign.id)
     preview = preview_outreach(campaign.id)
     return page(request, "campaign.html", campaign=campaign, leads=leads, counts=counts,
-                events=events, checkpoints=checkpoints, outreach_policy=policy, outreach_preview=preview)
+                events=events, checkpoints=checkpoints, outreach_policy=policy,
+                outreach_preview=preview, ranked=ranked, trace_events=trace_events,
+                gmail_demo_recipient=gmail_demo_address())
 
 
 @app.post("/campaigns/{campaign_id}/run")
@@ -392,10 +399,30 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)):
     return result
 
 
+@app.post("/campaigns/{campaign_id}/gmail-demo/send")
+def send_gmail_demo(
+    campaign_id: str, tasks: BackgroundTasks, csrf: str = Form(...),
+    db: Session = Depends(get_db), _: str = Depends(authorize),
+):
+    check_csrf(csrf)
+    campaign = get_campaign(db, campaign_id)
+    if campaign.status != "ready":
+        raise HTTPException(409, "Finish discovery before sending sandbox samples")
+    if not gmail_demo_address():
+        raise HTTPException(422, "Configure same-account Gmail demo sender, recipient and app password")
+    tasks.add_task(send_campaign_demo, campaign.id)
+    return redirect(f"/campaigns/{campaign.id}")
+
+
 @app.get("/leads/{lead_id}", response_class=HTMLResponse)
 def lead_detail(lead_id: str, request: Request, db: Session = Depends(get_db), _: str = Depends(authorize)):
     lead = get_lead(db, lead_id)
-    return page(request, "lead.html", lead=lead, campaign=lead.campaign)
+    scorecard = scorecard_for_display(lead.campaign, lead)
+    competitors = ranked_companies(lead.campaign, db.scalars(
+        select(Lead).where(Lead.campaign_id == lead.campaign_id)).all())
+    rank = next((row["rank"] for row in competitors if row["lead"].id == lead.id), None)
+    return page(request, "lead.html", lead=lead, campaign=lead.campaign,
+                scorecard=scorecard, rank=rank, competitor_count=len(competitors))
 
 
 @app.post("/leads/{lead_id}/draft")
@@ -501,8 +528,13 @@ def campaign_json(campaign_id: str, db: Session = Depends(get_db), _: str = Depe
     c = get_campaign(db, campaign_id)
     leads = db.scalars(select(Lead).where(Lead.campaign_id == c.id)).all()
     checkpoints = db.scalars(select(StepCheckpoint).where(StepCheckpoint.campaign_id == c.id)).all()
+    ranked = ranked_companies(c, leads)
     return {
         "id": c.id, "status": c.status, "error": c.error, "search_query": c.search_query,
+        "ranking": [{"rank": row["rank"], "lead_id": row["lead"].id,
+                     "company": row["lead"].company_name, "score": row["lead"].fit_score,
+                     "score_source": row["score_source"], "strength": row["top_strength"],
+                     "gap": row["main_gap"]} for row in ranked],
         "checkpoints": [{"step": s.step_key, "status": s.status, "attempts": s.attempts} for s in checkpoints],
         "leads": [{"id": l.id, "company": l.company_name, "domain": l.domain,
                    "person": l.person_name, "score": l.fit_score, "status": l.status,
