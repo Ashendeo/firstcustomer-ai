@@ -41,7 +41,7 @@ class Crustdata:
     @staticmethod
     def company_search_request(query: str, country: str, limit: int,
                                min_revenue_usd: int = 0,
-                               max_revenue_usd: int = 0) -> dict:
+                               max_revenue_usd: int = 0, cursor: str | None = None) -> dict:
         """Retrieve candidate firms; apply revenue bounds only after enrichment.
 
         Company Search does not guarantee an estimated-revenue field across all
@@ -57,7 +57,18 @@ class Crustdata:
         if country:
             data["filters"] = {"field": "locations.country", "type": "=",
                                "value": country}
+        if cursor:
+            data["cursor"] = cursor
         return data
+
+    def company_search_page(self, query: str, country: str, limit: int,
+                            min_revenue_usd: int = 0,
+                            max_revenue_usd: int = 0,
+                            cursor: str | None = None) -> dict:
+        request = self.company_search_request(query, country, limit,
+                                              min_revenue_usd, max_revenue_usd,
+                                              cursor=cursor)
+        return self.post("/company/search", request)
 
     def company_search(self, query: str, country: str, limit: int,
                        min_revenue_usd: int = 0,
