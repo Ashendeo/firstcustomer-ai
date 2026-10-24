@@ -27,7 +27,8 @@ def test_scoring_breakdown_sums_exactly_and_cites_observed_fields():
     assert {c["max"] for c in result["criteria"]} == {40, 20}
     assert all(c["source"] and c["explanation"] for c in result["criteria"])
     poor = score_company(campaign, {"basic_info": {"name": "Unknown"}}, None)
-    assert poor["total"] == 0
+    assert poor["total"] is None
+    assert poor["scorable"] is False
     assert poor["gaps"]
     assert poor["evidence_confidence"] == "limited"
 
