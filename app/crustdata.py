@@ -30,27 +30,31 @@ class Crustdata:
             raise CrustdataError(f"Crustdata request to {path} failed") from exc
 
     @staticmethod
-    def company_search_request(query: str, country: str, limit: int, min_headcount: int = 0, max_headcount: int = 0) -> dict:
+    def company_search_request(query: str, country: str, limit: int,
+                               min_revenue_usd: int = 0,
+                               max_revenue_usd: int = 0) -> dict:
+        """Retrieve candidate firms; apply revenue bounds only after enrichment.
+
+        Company Search does not guarantee an estimated-revenue field across all
+        plans, so don't send an unverified filter that might 422. The revenue
+        bounds are applied to observed enriched revenue during scoring.
+        """
         data = {
             "search": {"query": query[:600], "mode": "hybrid"},
-            "fields": ["basic_info.name", "basic_info.primary_domain", "basic_info.description", "headcount.total"],
+            "fields": ["basic_info.name", "basic_info.primary_domain",
+                       "basic_info.description"],
             "limit": min(limit, 10),
         }
-        conditions = []
         if country:
-            conditions.append({"field": "locations.country", "type": "=", "value": country})
-        if min_headcount:
-            conditions.append({"field": "headcount.total", "type": "=>", "value": min_headcount})
-        if max_headcount:
-            conditions.append({"field": "headcount.total", "type": "=<", "value": max_headcount})
-        if len(conditions) == 1:
-            data["filters"] = conditions[0]
-        elif conditions:
-            data["filters"] = {"op": "and", "conditions": conditions}
+            data["filters"] = {"field": "locations.country", "type": "=",
+                               "value": country}
         return data
 
-    def company_search(self, query: str, country: str, limit: int, min_headcount: int = 0, max_headcount: int = 0) -> list[dict]:
-        request = self.company_search_request(query, country, limit, min_headcount, max_headcount)
+    def company_search(self, query: str, country: str, limit: int,
+                       min_revenue_usd: int = 0,
+                       max_revenue_usd: int = 0) -> list[dict]:
+        request = self.company_search_request(query, country, limit,
+                                              min_revenue_usd, max_revenue_usd)
         response = self.post("/company/search", request)
         return response.get("companies", [])
 
