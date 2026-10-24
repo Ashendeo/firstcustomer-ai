@@ -106,19 +106,32 @@ class Crustdata:
             emails += ((person_data.get("contact") or {}).get("business_emails") or [])
         return [e for e in emails if isinstance(e, dict)]
 
-    def company_enrich(self, domain: str) -> dict:
-        """One domain, company identity and firmographic context (billable)."""
-        body = {
-            "domains": [domain],
-            "fields": ["basic_info", "headcount", "locations", "hiring"],
-        }
-        response = self.post("/company/enrich", body)
+    @staticmethod
+    def advanced_enrich_fields() -> list[str]:
+        """Documented section names; premium technographics is opt-in."""
+        fields = ["basic_info", "taxonomy", "headcount", "revenue",
+                  "funding", "hiring", "news", "locations", "people"]
+        if settings.CRUSTDATA_INCLUDE_TECHNOGRAPHICS:
+            fields.append("technographics")
+        return fields
+
+    def company_enrich(self, domain: str, *, advanced: bool = False) -> dict:
+        """Exact-domain company enrichment, with an optional rich signal bundle."""
+        fields = (self.advanced_enrich_fields() if advanced else
+                  ["basic_info", "headcount", "locations", "hiring"])
+        response = self.post("/company/enrich", {
+            "domains": [domain], "exact_match": True, "fields": fields,
+        })
         if not isinstance(response, list):
             raise CrustdataError("Unexpected company enrichment response shape")
         matching = (response[0] or {}).get("matches") or [] if response else []
-        for match in sorted(matching, key=lambda x: x.get("confidence_score") or 0, reverse=True):
+        for match in sorted(matching, key=lambda x: x.get("confidence_score") or 0,
+                            reverse=True):
             company = (match or {}).get("company_data") or {}
             found = ((company.get("basic_info") or {}).get("primary_domain") or "").lower()
             if found.removeprefix("www.") == domain.lower().removeprefix("www."):
                 return company
         return {}
+
+    def company_enrich_advanced(self, domain: str) -> dict:
+        return self.company_enrich(domain, advanced=True)
