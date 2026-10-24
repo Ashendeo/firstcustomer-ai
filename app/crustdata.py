@@ -77,7 +77,7 @@ class Crustdata:
                        "experience.employment_details.current.name",
                        "experience.employment_details.current.title",
                        "social_handles.professional_network_identifier.profile_url"],
-            "limit": min(limit, 2),
+            "limit": min(limit, 4),
         }
 
     def people_search(self, domain: str, titles: list[str], limit: int = 2) -> list[dict]:
