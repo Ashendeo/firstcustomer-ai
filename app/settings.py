@@ -25,3 +25,9 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 CSRF_SECRET = os.getenv("CSRF_SECRET", "")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
+
+# Explicit, local-only Gmail SMTP sandbox for demo drafts.
+# Neither address is embedded in production code; sender and recipient MUST match.
+GMAIL_DEMO_SENDER = os.getenv("GMAIL_DEMO_SENDER", "").strip().lower()
+GMAIL_DEMO_TO = os.getenv("GMAIL_DEMO_TO", "").strip().lower()
+GMAIL_DEMO_APP_PASSWORD = os.getenv("GMAIL_DEMO_APP_PASSWORD", "").replace(" ", "")
