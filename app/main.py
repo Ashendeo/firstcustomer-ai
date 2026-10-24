@@ -324,6 +324,29 @@ def trigger_outreach(
     return redirect(f"/campaigns/{campaign.id}")
 
 
+@app.post("/outreach/tick")
+def periodic_outreach_tick(request: Request, tasks: BackgroundTasks,
+                           db: Session = Depends(get_db)):
+    """Triggered by an operator-configured cron, never an open public sender."""
+    supplied = request.headers.get("x-outreach-cron-secret", "")
+    secret = settings.OUTREACH_CRON_SECRET
+    if not secret or len(secret) < 24:
+        raise HTTPException(503, "Autonomous scheduler is not configured")
+    if not hmac.compare_digest(secret, supplied):
+        raise HTTPException(401, "Unauthorized scheduler request")
+    campaign_ids = db.scalars(select(OutreachPolicy.campaign_id).join(
+        Campaign, OutreachPolicy.campaign_id == Campaign.id
+    ).where(
+        OutreachPolicy.mode == "live",
+        OutreachPolicy.auto_send.is_(True),
+        OutreachPolicy.authorized_at.is_not(None),
+        Campaign.status == "ready",
+    )).all()
+    for campaign_id in campaign_ids:
+        tasks.add_task(run_outreach, campaign_id)
+    return {"status": "scheduled", "campaigns": len(campaign_ids)}
+
+
 @app.get("/unsubscribe/{lead_id}/{token}", response_class=HTMLResponse)
 def unsubscribe_page(lead_id: str, token: str):
     if not valid_unsubscribe_signature(lead_id, token):
