@@ -7,7 +7,32 @@
 <div class="columns">
   <section class="panel">
     <div class="between"><h2>Prospect qualification</h2><span class="score large">{{ lead.fit_score }}<small>/100</small></span></div>
-    <div class="eyebrow">WHY THIS PROSPECT?</div><p>{{ lead.fit_reason }}</p>
+    <div class="eyebrow">RANKING AND EXPLANATION</div>
+    <p>Rank <strong>#{{ rank }}</strong> of {{ competitor_count }} companies in this campaign.</p>
+    {% if scorecard.reconstructed %}
+    <div class="notice">Legacy result: {{ lead.fit_score }}/100 is the originally stored model estimate. The following evidence diagnostic is reconstructed locally from saved records; its {{ scorecard.total }}/100 total did <strong>not</strong> generate the historic score. No API calls were made to reconstruct it.</div>
+    {% else %}
+    <p>{{ lead.fit_reason }}</p>
+    <p class="hint">Rubric {{ scorecard.version }}. The displayed total equals the sum of the rows below; not a calibrated purchase probability.</p>
+    {% endif %}
+    <div class="table-scroll"><table><thead><tr><th>Criterion</th><th>Points</th><th>Evidence and method</th></tr></thead><tbody>
+    {% for criterion in scorecard.criteria %}
+    <tr><td><strong>{{ criterion.name }}</strong><div class="small">Source: {{ criterion.source }}</div></td>
+    <td><span class="score">{{ criterion.earned }}</span> / {{ criterion.max }}</td>
+    <td>{{ criterion.explanation }}<div class="small">Observed: {{ criterion.evidence }}</div></td></tr>
+    {% endfor %}
+    <tr><td><strong>Evidence rubric total</strong></td><td><strong>{{ scorecard.total }}/100</strong></td><td>{{ scorecard.ranking_basis }}</td></tr>
+    </tbody></table></div>
+    {% if scorecard.gaps %}
+    <div class="eyebrow mt">UNCERTAINTIES / MISSING EVIDENCE</div>
+    <ul>{% for gap in scorecard.gaps %}<li>{{ gap }}</li>{% endfor %}</ul>
+    {% endif %}
+    <p class="hint">Evidence confidence: {{ scorecard.evidence_confidence }}. These are data-completeness signals, not a probability of converting this customer.</p>
+    {% if lead.evidence.model_assessment %}
+    <details><summary>Qwen assessment (separate from numerical score)</summary>
+    <p>Model-proposed score: {{ lead.evidence.model_assessment.model_score }}/100</p>
+    <p>{{ lead.evidence.model_assessment.model_reason }}</p></details>
+    {% endif %}
     <div class="eyebrow mt">COMPANY CONTEXT</div><p>{{ lead.description or 'No company description returned.' }}</p>
     <div class="eyebrow mt">LIKELY DECISION-MAKER</div>
     <p><strong>{{ lead.person_name or 'Not identified' }}</strong><br><span class="muted">{{ lead.person_title or 'No role available' }}</span></p>
@@ -16,7 +41,7 @@
     <details><summary>View raw evidence record</summary><pre>{{ lead.evidence | tojson(indent=2) }}</pre></details>
   </section>
   <section class="panel">
-    <h2>Outreach draft</h2><p class="hint">Review facts and permissions before contacting a person. Emails are never sent automatically.</p>
+    <h2>Outreach draft</h2><p class="hint">Campaign-authorized live mode may send eligible emails automatically through Resend. In Gmail demo mode, all sandbox samples go only to the configured owner inbox. Manual review remains available.</p>
     {% if lead.status in ['draft','approved'] %}
       <form method="post" action="/leads/{{ lead.id }}/draft"><input type="hidden" name="csrf" value="{{ csrf }}">
         <label>Recipient business email (manually verified)<input type="email" name="email" value="{{ lead.email }}" placeholder="person@company.com"></label>
