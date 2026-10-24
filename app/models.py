@@ -35,7 +35,7 @@ class Lead(Base):
     __tablename__ = "leads"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"), index=True)
-    company_id: Mapped[str] = mapped_column(String(80), default="")
+    discovery_key: Mapped[str | None] = mapped_column(String(64), nullable=True)\n    company_id: Mapped[str] = mapped_column(String(80), default="")
     company_name: Mapped[str] = mapped_column(String(200))
     domain: Mapped[str] = mapped_column(String(180), default="")
     description: Mapped[str] = mapped_column(Text, default="")
@@ -55,7 +55,7 @@ class Lead(Base):
     booked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     booking_event_uri: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    campaign: Mapped[Campaign] = relationship(back_populates="leads")
+    __table_args__ = (UniqueConstraint("campaign_id", "discovery_key", name="uq_leads_campaign_discovery"),)\n    campaign: Mapped[Campaign] = relationship(back_populates="leads")
 
 
 class AuditEvent(Base):
@@ -72,3 +72,17 @@ class ProcessedWebhook(Base):
     __tablename__ = "processed_webhooks"
     event_key: Mapped[str] = mapped_column(String(160), primary_key=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class StepCheckpoint(Base):
+    __tablename__ = "step_checkpoints"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    campaign_id: Mapped[str] = mapped_column(String(36), index=True)
+    step_key: Mapped[str] = mapped_column(String(160))
+    input_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="in_flight")
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(String(100), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    __table_args__ = (UniqueConstraint("campaign_id", "step_key", name="uq_checkpoint_campaign_step"),)
