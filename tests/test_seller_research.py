@@ -6,6 +6,7 @@ from app.models import Campaign, Lead, AuditEvent, StepCheckpoint
 from app.scoring import score_company
 from app.seller_research import normalize_company_domain
 import app.seller_research as research
+import app.market_skill as market_skill
 
 
 def make_campaign(client, token, domain="seller.example"):
@@ -54,7 +55,8 @@ def test_research_first_generates_grounded_query_and_uses_checkpoints(
     monkeypatch.setattr(settings, "DEMO_MODE", False)
     monkeypatch.setattr(settings, "CRUSTDATA_API_KEY", "fake")
     monkeypatch.setattr(settings, "BRAVE_SEARCH_API_KEY", "fake")
-    monkeypatch.setattr(settings, "MAX_PROSPECT_ENRICHMENTS", 2)
+    monkeypatch.setattr(settings, "MAX_PROSPECT_ENRICHMENTS", 0)
+    monkeypatch.setattr(settings, "MAX_CONTACT_ENRICHMENTS", 3)
     monkeypatch.setattr(settings, "MAX_COMPANIES", 1)
     monkeypatch.setattr(settings, "MAX_PEOPLE_SEARCHES", 1)
     calls = {"enrich": [], "search": 0, "web": 0, "llm": 0}
@@ -78,8 +80,13 @@ def test_research_first_generates_grounded_query_and_uses_checkpoints(
 
         def people_search(self, domain, titles, limit=2):
             return [{"basic_profile": {"name": "Buyer"},
+                     "social_handles": {"professional_network_identifier": {"profile_url": "https://www.linkedin.com/in/security-buyer"}},
                      "experience": {"employment_details": {
                          "current": [{"title": "Head of Security"}]}}}]
+
+    def fake_email(self, profile):
+        return [{"email": "buyer@prospect.example", "status": "deliverable"}]
+    FakeCrustdata.business_email_enrich = fake_email
 
     def fake_web(query):
         calls["web"] += 1
@@ -106,6 +113,8 @@ def test_research_first_generates_grounded_query_and_uses_checkpoints(
     monkeypatch.setattr(agent, "Crustdata", FakeCrustdata)
     monkeypatch.setattr(research, "Crustdata", FakeCrustdata)
     monkeypatch.setattr(research, "web_search", fake_web)
+    monkeypatch.setattr(market_skill, "web_search", fake_web)
+    monkeypatch.setattr(market_skill, "Crustdata", FakeCrustdata)
     monkeypatch.setattr(agent, "llm_json", fake_model)
     with SessionLocal() as db:
         c = db.get(Campaign, campaign_id)
@@ -117,7 +126,7 @@ def test_research_first_generates_grounded_query_and_uses_checkpoints(
         assert c.status == "ready", c.error
         assert c.search_query == "Organizations operating enterprise security operations teams"
         lead = db.scalar(select(Lead).where(Lead.campaign_id == campaign_id))
-        assert lead.evidence["scorecard"]["version"] == "scorecard-v2"
+        assert lead.evidence["scorecard"]["version"] == "market-skill-v1"
         assert lead.fit_score is not None and lead.fit_score > 0
         step = db.scalar(select(StepCheckpoint).where(
             StepCheckpoint.campaign_id == campaign_id,
