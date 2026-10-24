@@ -49,6 +49,19 @@ def revenue_usd_range(company: dict):
     data = company.get("revenue") or {}
     if not isinstance(data, dict):
         return None, None
+    # Crustdata native enrichment commonly uses revenue.estimated.lower_bound_usd /
+    # upper_bound_usd; also accept normalized flat USD keys from integrations.
+    estimated = data.get("estimated") or {}
+    if isinstance(estimated, dict):
+        lower = estimated.get("lower_bound_usd")
+        upper = estimated.get("upper_bound_usd")
+        try:
+            if lower is not None and upper is not None:
+                lo, hi = float(lower), float(upper)
+                if 0 <= lo <= hi < 1e16:
+                    return lo, hi
+        except (TypeError, ValueError):
+            pass
     def numeric(keys):
         for key in keys:
             value = data.get(key)
