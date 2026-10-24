@@ -11,6 +11,9 @@ class IntegrationError(RuntimeError):
 
 
 def send_email(to: str, subject: str, body: str, lead_id: str, *, reply_to: str = "") -> str:
+    from .gmail_demo import gmail_demo_address
+    if gmail_demo_address():
+        raise IntegrationError("Gmail demo sink active; real Resend delivery is disabled")
     if settings.DEMO_MODE:
         raise IntegrationError("Sending disabled in DEMO_MODE")
     if not settings.RESEND_API_KEY or not settings.FROM_EMAIL:
