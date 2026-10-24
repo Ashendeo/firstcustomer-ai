@@ -148,3 +148,20 @@ class InboundReply(Base):
     classification: Mapped[str] = mapped_column(String(45))
     excerpt: Mapped[str] = mapped_column(Text, default="")
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class MarketPlaybook(Base):
+    """Shared seller-domain market research and reusable buyer-fit skill.
+
+    A domain is researched once across campaigns. The initial in_flight row is
+    committed before invoking paid providers; uncertain work is not replayed.
+    """
+    __tablename__ = "market_playbooks"
+    seller_domain: Mapped[str] = mapped_column(String(180), primary_key=True)
+    product_hash: Mapped[str] = mapped_column(String(64))
+    market_domain: Mapped[str] = mapped_column(String(90), default="")
+    status: Mapped[str] = mapped_column(String(24), default="in_flight")
+    research: Mapped[dict] = mapped_column(JSON, default=dict)
+    rubric: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str] = mapped_column(String(100), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
