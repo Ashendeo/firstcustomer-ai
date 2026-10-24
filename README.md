@@ -15,7 +15,7 @@ FastAPI (one Railway web service, one worker)
   |-- crustdata.py (current Company & People Search REST APIs)
   |-- integrations.py (approved Resend sends; signed Calendly webhook)
   |-- Postgres (campaigns, leads, audit log, webhook deduplication)
-  +-- FastAPI BackgroundTasks (in-process; restart interrupts job)
+  +-- FastAPI BackgroundTasks (in-process; interruptions can be manually recovered)
 ```
 
 ## Quick start (no external credentials)
@@ -58,6 +58,33 @@ MAX_PEOPLE_SEARCHES=3
 Run again. Crustdata Company Search returns company records, then Crustdata People Search filters people by current employer domain and title. The LLM constructs a bounded search plan and analyzes supplied records. Optional headcount ranges are enforced as Crustdata structured search filters (premium charges apply). One lead is created per company. A missing decision-maker **stays missing**, rather than being invented. The app deliberately does **not** automatically enrich private emails or guess them from names.
 
 **Important costs:** Crustdata charges credits for returned records and premium field groups. Person Search title and experience fields may be premium. Locally hosted Qwen has no per-token API bill, but consumes local CPU/GPU, RAM and electricity. Hard limits cap records and people searches, but there is no full accounting-budget circuit breaker yet.
+
+## Safe retries and paid-call checkpointing
+
+After updating the repository, run the schema migration **before restarting FastAPI**:
+
+```powershell
+cd C:\\Code\\firstcustomer-ai
+.\\.venv\\Scripts\\alembic.exe upgrade head
+.\\.venv\\Scripts\\python.exe -m pytest -q
+.\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --reload
+```
+
+The `step_checkpoints` table stores one write-ahead record per metered operation and campaign:
+- `plan` — model-generated search query and titles
+- `company_search` — entire Crustdata company list
+- `people:<hash>` — Crustdata people search per unique company
+- `evaluation:<hash>` — model-produced qualification and email draft per lead
+
+Each record stores a hash of exact inputs (including model identifier/prompt revision where relevant), execution state, attempt count, and successful JSON response. The app commits `in_flight` **before** calling an external service and commits the response as `complete` immediately afterward. Completed results are reused on the same campaign and never automatically re-fetched. Existing draft/approved/sent leads are preserved.
+
+**Charge ambiguity is unavoidable without provider-side idempotency or reconciliation.** A timeout, process crash, or failed database commit after the provider processed a request can leave an `in_flight` / `uncertain` checkpoint. The app **will not automatically reissue that call**. In the campaign screen, inspect the checkpoint and explicitly accept possible duplicate charges before authorizing its retry; then click `Retry discovery`. A blocked retry makes no paid calls for the blocked step. A model's internal Ollama fallback can still run more than one local inference *within a single authorized step*.
+
+For jobs left `running` after a server restart, verify the previous worker is stopped before clicking `Recover interrupted run`. This is a **single-worker hackathon design**, not a distributed lease-based scheduler; a robust production deployment requires distributed locks/leases and a durable queue.
+
+Pre-checkpoint campaigns that already have saved work cannot be safely reconstructed in full. Their automatic retry is blocked; create a new campaign rather than silently repeating unknown provider calls.
+
+Checkpoints are per campaign, not across campaigns. They retain raw company/person records, which can contain personal data: secure the database, set a retention policy, and avoid storing data beyond permitted use. Any deliberate refresh or changed query should be treated as a new, potentially billable campaign. The current implementation does not yet estimate provider charges or enforce a monetary budget.
 
 ## Optional email sending
 
