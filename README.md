@@ -103,6 +103,12 @@ $body = @{model="qwen3:4b";stream=$false;think=$false;format="json";messages=@(@
 
 Start with `MAX_COMPANIES=1` and `MAX_PEOPLE_SEARCHES=1`. The checkpoint journal prevents automatically replaying completed Crustdata/model steps, but a timed-out or uncertain paid operation still requires explicit operator authorization.
 
+## Local SQLite approval concurrency
+
+Local SQLite runs in Write-Ahead Logging (WAL) mode with a 10-second busy timeout. This lets the dashboard read the database while the background campaign and manual draft approval commit changes. Each approval is a short transaction; a transient SQLite lock is retried up to three times (including the first attempt) with rollback between attempts. Retrying approval **does not** call Crustdata, Qwen, or the email provider. Repeated approval requests on an already-approved lead succeed without creating duplicate audit records.
+
+A persistent lock is returned as a clear HTTP 503 with a retry hint, rather than an uncaught traceback. If you encounter it, close SQLite viewers/editors holding transactions and make sure only one FastAPI instance is running. WAL does **not** allow two writers simultaneously. For production-scale concurrency use PostgreSQL instead of SQLite. The database must live on a local disk; SQLite WAL is unsuitable for most network shares.
+
 ## Optional email sending
 
 Configure a domain with [Resend](https://resend.com/docs) and set:
