@@ -413,9 +413,16 @@ def run_campaign(campaign_id: str):
                     verified_email = f"fictional{i+1}@example.com" if person else ""
                     best_person = person
                 else:
-                    contact = discover_contact(
-                        db, c.id, domain, discovery_key, people, skill, api,
-                        audit, contact_budget, fallback_budget,
+                    contact = checkpointed(
+                        db, c.id, "contact_discovery_result:" + discovery_key[:32],
+                        {"revision": "contact-discovery-v2",
+                         "domain": domain,
+                         "people_hash": fingerprint(people),
+                         "market_skill": skill.get("version", "none")},
+                        lambda: discover_contact(
+                            db, c.id, domain, discovery_key, people, skill, api,
+                            audit, contact_budget, fallback_budget,
+                        ),
                     )
                     person = contact["person"]
                     verified_email = contact["email"]
