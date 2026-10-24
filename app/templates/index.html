@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Campaigns · FirstCustomer AI{% endblock %}
+{% block content %}
+<div class="eyebrow">OVERVIEW</div>
+<h1>Find your next customer.</h1>
+<p class="subtitle">Describe what you sell. We'll research target accounts, identify likely buyers, score the evidence and draft outreach for your approval.</p>
+{% if demo %}<div class="notice">DEMO MODE: All displayed prospects are fictional. No Crustdata, OpenAI or email credits are consumed.</div>{% endif %}
+<div class="columns">
+  <section class="panel">
+    <h2>Create a campaign</h2><p class="hint">Give the agent a specific ideal customer profile.</p>
+    <form action="/campaigns" method="post">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label>Campaign name<input required minlength="3" maxlength="140" name="name" value="Sports analytics pilots"></label>
+      <label>Your product<textarea required minlength="10" name="product" rows="3">An AI video analytics platform that turns corporate football matches into highlights and player statistics.</textarea></label>
+      <label>Ideal customers<textarea required minlength="10" name="ideal_customer" rows="3">Technology and services companies with 500–5000 employees that may organize corporate sports or wellness activities.</textarea></label>
+      <div class="two">
+        <label>Country<input name="country" value="India"></label>
+        <label>Buyer titles (comma-separated)<input name="buyer_titles" value="Head of HR,HR Director,Employee Engagement"></label>
+      </div>
+      <div class="two">
+        <label>Minimum employees (optional)<input name="min_headcount" type="number" min="0" value="500"></label>
+        <label>Maximum employees (optional)<input name="max_headcount" type="number" min="0" value="5000"></label>
+      </div>
+      <p class="hint">Headcount fields add premium Crustdata search charges in live mode.</p>
+      <label>Calendly event URL (optional)<input name="booking_url" type="url" placeholder="https://calendly.com/your-team/15min"></label>
+      <button class="primary" type="submit">Create campaign <span>→</span></button>
+    </form>
+  </section>
+  <section class="panel">
+    <div class="between"><h2>Recent campaigns</h2><span class="muted">{{ campaigns|length }} total</span></div>
+    {% if campaigns %}
+      {% for c in campaigns %}
+        <a class="campaign-item" href="/campaigns/{{ c.id }}">
+          <div><strong>{{ c.name }}</strong><div class="small">{{ c.country }} · {{ c.created_at.strftime('%d %b %Y') }}</div></div>
+          <span class="pill {{ 'success' if c.status == 'ready' else 'warn' if c.status == 'failed' else 'neutral' }}">{{ c.status }}</span>
+        </a>
+      {% endfor %}
+    {% else %}<div class="empty">No campaigns yet. Create your first on the left.</div>{% endif %}
+    <div class="sidebar-card"><strong>What's automated?</strong><p class="hint">Finding matching companies, identifying professional profiles, evaluating fit and generating personalized drafts.</p><strong>What's gated?</strong><p class="hint">You must explicitly approve and trigger every outgoing email. Calendar bookings must be verified by Calendly.</p></div>
+  </section>
+</div>
+{% endblock %}

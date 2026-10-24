@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}{{ campaign.name }} · FirstCustomer AI{% endblock %}
+{% block content %}
+<a class="back" href="/">← All campaigns</a>
+<div class="between headline"><div><div class="eyebrow">CAMPAIGN DETAIL</div><h1>{{ campaign.name }}</h1><p class="subtitle">{{ campaign.ideal_customer }}</p></div><span class="pill {{ 'success' if campaign.status == 'ready' else 'warn' if campaign.status == 'failed' else 'neutral' }}">{{ campaign.status }}</span></div>
+{% if campaign.error %}<div class="notice error">{{ campaign.error }}</div>{% endif %}
+{% if campaign.status in ['draft','failed'] %}
+<form action="/campaigns/{{ campaign.id }}/run" method="post" class="action-row"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="primary">{{ 'Run discovery agent' if campaign.status == 'draft' else 'Retry discovery' }} →</button><span class="hint">{% if demo %}Generates a fictional walkthrough.{% else %}Queries live Crustdata and OpenAI; API credits may be charged.{% endif %}</span></form>
+{% elif campaign.status == 'running' %}<div class="notice">Discovery is running. Refresh this page to see new leads. This demo uses an in-process job, so a deployment restart can interrupt it.</div>
+{% endif %}
+<div class="stats">
+  <div class="stat"><div class="statvalue">{{ leads|length }}</div><span>Accounts found</span></div>
+  <div class="stat"><div class="statvalue">{{ leads|selectattr('person_name')|list|length }}</div><span>Contacts identified</span></div>
+  <div class="stat"><div class="statvalue">{{ counts.sent + counts.booked }}</div><span>Outreach sent / booked</span></div>
+  <div class="stat"><div class="statvalue">{{ counts.booked }}</div><span>Meetings booked</span></div>
+</div>
+<section class="panel"><div class="between"><h2>Prospect pipeline</h2><span class="muted">Sorted by fit score</span></div>
+{% if leads %}
+<div class="table-scroll"><table><thead><tr><th>Company</th><th>Decision-maker</th><th>Fit</th><th>Status</th><th></th></tr></thead><tbody>
+{% for lead in leads %}<tr><td><strong>{{ lead.company_name }}</strong><div class="small">{{ lead.domain }}</div></td><td>{{ lead.person_name or 'Not found' }}<div class="small">{{ lead.person_title or 'Unknown role' }}</div></td><td><span class="score">{{ lead.fit_score }}</span>/100</td><td><span class="pill {{ 'success' if lead.status == 'booked' else 'neutral' }}">{{ lead.status }}</span></td><td><a href="/leads/{{ lead.id }}" class="subtle-link">Review →</a></td></tr>{% endfor %}
+</tbody></table></div>
+{% else %}<div class="empty">No prospects yet. Run discovery above.</div>{% endif %}
+</section>
+<section class="panel narrow"><h2>Execution history</h2>{% for e in events %}<div class="history"><span class="dot"></span><div><strong>{{ e.action.replace('_',' ')|title }}</strong><div class="small">{{ e.created_at.strftime('%d %b %Y · %H:%M UTC') }}</div></div></div>{% endfor %}</section>
+{% endblock %}

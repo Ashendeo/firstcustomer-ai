@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}{{ lead.company_name }} · FirstCustomer AI{% endblock %}
+{% block content %}
+<a class="back" href="/campaigns/{{ campaign.id }}">← {{ campaign.name }}</a>
+<div class="between headline"><div><div class="eyebrow">PROSPECT RESEARCH</div><h1>{{ lead.company_name }}</h1><p class="subtitle">{{ lead.domain }} · {% if lead.source == 'demo' %}Fictional test record{% else %}Crustdata-sourced data{% endif %}</p></div><span class="pill {{ 'success' if lead.status == 'booked' else 'neutral' }}">{{ lead.status }}</span></div>
+{% if lead.source == 'demo' %}<div class="notice">This lead is fictional. Approval can be tested, but sending is blocked.</div>{% endif %}
+<div class="columns">
+  <section class="panel">
+    <div class="between"><h2>Prospect qualification</h2><span class="score large">{{ lead.fit_score }}<small>/100</small></span></div>
+    <div class="eyebrow">WHY THIS PROSPECT?</div><p>{{ lead.fit_reason }}</p>
+    <div class="eyebrow mt">COMPANY CONTEXT</div><p>{{ lead.description or 'No company description returned.' }}</p>
+    <div class="eyebrow mt">LIKELY DECISION-MAKER</div>
+    <p><strong>{{ lead.person_name or 'Not identified' }}</strong><br><span class="muted">{{ lead.person_title or 'No role available' }}</span></p>
+    {% if lead.person_profile and lead.person_profile.startswith('https://') %}<p><a target="_blank" rel="noopener noreferrer" href="{{ lead.person_profile }}">Professional profile ↗</a></p>{% endif %}
+    <p class="hint">Evidence: {{ lead.evidence.provider }} entity records. A fit score is an inference, not verified purchasing intent.</p>
+    <details><summary>View raw evidence record</summary><pre>{{ lead.evidence | tojson(indent=2) }}</pre></details>
+  </section>
+  <section class="panel">
+    <h2>Outreach draft</h2><p class="hint">Review facts and permissions before contacting a person. Emails are never sent automatically.</p>
+    {% if lead.status in ['draft','approved'] %}
+      <form method="post" action="/leads/{{ lead.id }}/draft"><input type="hidden" name="csrf" value="{{ csrf }}">
+        <label>Recipient business email (manually verified)<input type="email" name="email" value="{{ lead.email }}" placeholder="person@company.com"></label>
+        <label>Subject<input name="subject" required minlength="3" maxlength="160" value="{{ lead.draft_subject }}"></label>
+        <label>Email body<textarea name="body" rows="11" required minlength="20" maxlength="3000">{{ lead.draft_body }}</textarea></label>
+        <button class="secondary" type="submit">Save changes (resets approval)</button>
+      </form>
+      {% if lead.status == 'draft' %}
+      <form method="post" action="/leads/{{ lead.id }}/approve" class="action-row"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="primary">Approve this draft ✓</button></form>
+      {% elif lead.status == 'approved' %}
+      <form method="post" action="/leads/{{ lead.id }}/send" class="action-row"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit" class="primary" {% if demo or not has_resend or not lead.email %}disabled{% endif %}>Send approved email →</button></form>
+      <p class="hint">{% if demo %}Disabled for fictional demo data.{% elif not has_resend %}Configure RESEND_API_KEY and FROM_EMAIL to enable sending.{% elif not lead.email %}Save a verified business email first.{% else %}Sends one message with an idempotency key. Check consent and relevance before continuing.{% endif %}</p>
+      {% endif %}
+    {% else %}
+      <div class="field-preview"><strong>{{ lead.draft_subject }}</strong><pre>{{ lead.draft_body }}</pre></div>
+      {% if lead.status == 'booked' %}<div class="notice good">Calendly verified a booking from this contact. Event URI: {{ lead.booking_event_uri }}</div>{% endif %}
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

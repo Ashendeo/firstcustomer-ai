@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}FirstCustomer AI{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="brand"><span class="brandmark">◈</span><span>FirstCustomer <strong>AI</strong></span></div>
+    <div class="nav-heading">WORKSPACE</div>
+    <a class="nav" href="/">⌂ &nbsp; Campaigns</a>
+    <div class="side-bottom">
+      <div class="small">ENVIRONMENT</div>
+      {% if demo %}<span class="pill warn">● Demo · Fictional data</span>{% else %}<span class="pill success">● Live APIs</span>{% endif %}
+      <p class="side-note">An evidence-first outbound sales agent with human-approved actions.</p>
+    </div>
+  </aside>
+  <main class="main">
+    <header class="topbar"><span>SALES INTELLIGENCE WORKSPACE</span><span class="tiny">FastAPI · PostgreSQL · Crustdata</span></header>
+    <div class="content">{% block content %}{% endblock %}</div>
+  </main>
+</div>
+</body>
+</html>
